@@ -2697,7 +2697,15 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
       },
       { capture: true }
     );
-    owner.registerDomEvent(doc, "focusin", (e) => this.searchKeysFollowFocus(e), { capture: true });
+    owner.registerDomEvent(
+      doc,
+      "focusin",
+      (e) => {
+        this.activeFollowsFocus(e);
+        this.searchKeysFollowFocus(e);
+      },
+      { capture: true }
+    );
     const swallow = (e) => {
       const s = this.swallow;
       if (!s) return;
@@ -3185,6 +3193,22 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
    * on top and the other cards' come off (they stay open, and go back on top when focus returns to them). Focus
    * in a card header (the title) takes them all off; focus outside cards leaves the stack alone.
    */
+  /**
+   * Focus inside a card's note makes that card the active leaf. Cards can get focus without becoming active
+   * (one opened into a lane with active: false, a restored layout, keyboard focus moves), and the lanes view
+   * then stays active. workspace.activeEditor is null in that case, so commands and plugins that act on the
+   * active editor fail: Templater's "Insert template" ("No active editor, can't append templates") and its
+   * jump to tp.file.cursor() after creating a note.
+   */
+  activeFollowsFocus(e) {
+    const t = asEl(e.target);
+    if (!t?.closest(".lane-item-body")) return;
+    for (const [leaf, host] of this.hostedLeaves) {
+      if (!host.item.el.contains(t)) continue;
+      if (this.app.workspace.activeLeaf !== leaf) this.app.workspace.setActiveLeaf(leaf, { focus: false });
+      return;
+    }
+  }
   searchKeysFollowFocus(e) {
     const t = asEl(e.target);
     const card = t?.closest(".lane-item");
