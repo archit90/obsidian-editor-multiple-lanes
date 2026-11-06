@@ -1,45 +1,151 @@
 /* Editor Lanes: the panel scrolls; each hosted editor grows to its content instead of scrolling itself. */
-.lane-view { padding: 0 !important; display: flex; flex-direction: column; overflow: hidden !important; }
-.lane-view.is-drop-target { outline: 2px dashed var(--interactive-accent, #7b6cd9); outline-offset: -4px; }
+.lane-view {
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden !important;
+}
+.lane-view.is-drop-target {
+  outline: 2px dashed var(--interactive-accent, #7b6cd9);
+  outline-offset: -4px;
+}
 
-.lane-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 6px 40vh; }
-.lane-empty { color: var(--text-faint, #999); padding: 12px; font-size: var(--font-ui-small, 0.9em); }
-.lane-hidden { display: none !important; }
+.lane-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 40vh;
+}
+.lane-empty {
+  color: var(--text-faint, #999);
+  padding: 12px;
+  font-size: var(--font-ui-small, 0.9em);
+}
+.lane-hidden {
+  display: none !important;
+}
 
 .lane-item {
   border: 1px solid var(--background-modifier-border-hover, #bbb);
   border-radius: var(--radius-m, 6px);
-  margin: 8px 0; background: var(--background-primary, #fff);
-  box-shadow: var(--shadow-s, 0 1px 3px rgba(0,0,0,.12));
+  margin: 8px 0;
+  background: var(--background-primary, #fff);
+  box-shadow: var(--shadow-s, 0 1px 3px rgba(0, 0, 0, 0.12));
 }
 /* the note being edited stands out */
-.lane-item:focus-within { border-color: var(--interactive-accent, #7b6cd9); }
+.lane-item:focus-within {
+  border-color: var(--interactive-accent, #7b6cd9);
+}
 .lane-item-header {
-  display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  min-height: 32px;
+  cursor: pointer;
+  font-size: var(--font-ui-medium, 1em);
   border-bottom: 1px solid var(--background-modifier-border, #ddd);
-  position: sticky; top: 0; z-index: 1; background: var(--background-primary, inherit);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--background-primary, inherit);
   border-radius: var(--radius-m, 6px) var(--radius-m, 6px) 0 0;
 }
-.lane-item.is-collapsed .lane-item-header { border-bottom: none; border-radius: var(--radius-m, 6px); }
-.lane-chevron { width: 1em; color: var(--text-muted, #888); flex: none; }
+.lane-item.is-collapsed .lane-item-header {
+  border-bottom: none;
+  border-radius: var(--radius-m, 6px);
+}
+.lane-chevron {
+  width: 1.2em;
+  flex: none;
+  padding: 0;
+  height: auto;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+}
+.lane-chevron:focus-visible {
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus, #999);
+}
+/* screen-reader-only hint for the editable title */
+.lane-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .lane-item-title {
-  font-weight: 600; color: var(--text-normal, inherit); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  cursor: text; outline: none; border-radius: var(--radius-s, 4px); padding: 0 2px; min-width: 2em;
+  font-weight: 600;
+  color: var(--text-normal, inherit);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+  outline: none;
+  border-radius: var(--radius-s, 4px);
+  padding: 0 2px;
+  min-width: 2em;
 }
-.lane-item-title:hover { background: var(--background-modifier-hover, rgba(0,0,0,.05)); }
-.lane-item-title:focus { background: var(--background-modifier-form-field, transparent); box-shadow: 0 0 0 1px var(--background-modifier-border-focus, #999); text-overflow: clip; }
+.lane-item-title:hover {
+  background: var(--background-modifier-hover, rgba(0, 0, 0, 0.05));
+}
+.lane-item-title:focus {
+  background: var(--background-modifier-form-field, transparent);
+  box-shadow: 0 0 0 1px var(--background-modifier-border-focus, #999);
+  text-overflow: clip;
+}
+/* "folder/" + editable name, read as one path; a long folder is cut from the left so the name stays visible */
+.lane-item-name {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  flex: 0 1 auto;
+}
 .lane-item-path {
-  margin-left: auto; color: var(--text-faint, #999); font-size: var(--font-ui-smaller, 0.8em);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; min-width: 0;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  min-width: 0;
+  flex: 0 1 auto;
 }
-.lane-close { flex: none; padding: 0 6px; height: auto; background: none; box-shadow: none; color: var(--text-muted, #888); }
-.lane-close:hover { color: var(--text-error, #d33); }
-.lane-item.is-collapsed .lane-item-body { display: none; }
+.lane-item-path:empty {
+  display: none;
+}
+.lane-item-name .lane-item-title {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+.lane-close {
+  flex: none;
+  padding: 0 6px;
+  height: auto;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted, #888);
+}
+.lane-close:hover {
+  color: var(--text-error, #d33);
+}
+.lane-item.is-collapsed .lane-item-body {
+  display: none;
+}
+/* expanded but not mounted yet (it mounts when scrolled near view, or on click) */
+.lane-item:not(.is-collapsed) .lane-item-body:empty {
+  min-height: 2em;
+  cursor: pointer;
+}
 
 /* hosted leaf: no tab header or inline title (the item header shows the name), and no inner scrolling */
 .lane-item-body .view-header,
 .lane-item-body .inline-title,
-.lane-item-body .workspace-leaf-resize-handle { display: none !important; }
+.lane-item-body .workspace-leaf-resize-handle {
+  display: none !important;
+}
 .lane-item-body .lane-split,
 .lane-item-body .workspace-leaf,
 .lane-item-body .workspace-leaf-content,
@@ -47,15 +153,22 @@
 .lane-item-body .markdown-source-view,
 .lane-item-body .cm-editor,
 .lane-item-body .markdown-reading-view {
-  height: auto !important; min-height: 0 !important; flex: none !important; overflow: visible !important;
+  height: auto !important;
+  min-height: 0 !important;
+  flex: none !important;
+  overflow: visible !important;
 }
 /* Obsidian sets `.workspace-leaf { contain: strict !important }`, i.e. size containment: the leaf's height
    would ignore its content and `height: auto` would come out as 0px. */
-.lane-item-body .workspace-leaf { contain: layout style !important; }
+.lane-item-body .workspace-leaf {
+  contain: layout style !important;
+}
 /* Obsidian sets an inline `padding-bottom` of half the editor's height on .cm-content (Reading view: on
    .markdown-preview-sizer) so a note can scroll past its end. With the editor as tall as its content, that
    pads the gap before the backlinks panes; inline styles lose to !important. */
-.lane-item-body .cm-content { padding-bottom: 0 !important; }
+.lane-item-body .cm-content {
+  padding-bottom: 0 !important;
+}
 /* Obsidian paints `.workspace-split` with --tab-container-background and a leaf outside a main-area tab group
    with --background-secondary (the sidebar colour). Hosted notes should look like a normal editor. */
 .lane-item-body .lane-split,
@@ -63,18 +176,112 @@
 .lane-item-body .workspace-leaf-content,
 .lane-item-body .view-content,
 .lane-item-body .markdown-reading-view,
-.lane-item-body .markdown-preview-view { background-color: var(--background-primary) !important; }
-.lane-item-body .embedded-backlinks { min-height: 0 !important; }
+.lane-item-body .markdown-preview-view {
+  background-color: var(--background-primary) !important;
+}
+.lane-item-body .embedded-backlinks {
+  min-height: 0 !important;
+}
 .lane-item-body .cm-scroller,
 .lane-item-body .markdown-preview-view {
-  height: auto !important; overflow: visible !important; padding-bottom: 8px !important;
+  height: auto !important;
+  overflow: visible !important;
+  padding-bottom: 8px !important;
 }
 .lane-item-body .cm-sizer,
-.lane-item-body .markdown-preview-sizer { min-height: 0 !important; padding-bottom: 0 !important; }
-.lane-item-body .view-content { padding: 0 4px; }
+.lane-item-body .markdown-preview-sizer {
+  min-height: 0 !important;
+  padding-bottom: 0 !important;
+}
+.lane-item-body .view-content {
+  padding: 0 4px;
+}
 
 /* Lane background (the part that isn't a note) uses the secondary shade, so each note card, which keeps the
    editor background, stands out. Obsidian paints main-area .view-content with --background-primary. */
 .workspace-leaf-content[data-type="editor-lane"] > .view-content.lane-view,
-.lane-view { background-color: var(--background-secondary, #f2f2f2) !important; }
-.lane-view .lane-empty { color: var(--text-muted, #888); }
+.lane-view {
+  background-color: var(--background-secondary, #f2f2f2) !important;
+}
+.lane-view .lane-empty {
+  color: var(--text-muted, #888);
+}
+
+/* bigger header text: name a little larger than the folder prefix */
+.lane-item-title {
+  font-size: 1.02em;
+}
+.lane-chevron {
+  font-size: 1em;
+}
+
+/* Lane header: a lane has no navigation history and its title says nothing, so hide the back/forward
+   buttons and the "Editor lane" title. The ⋯ menu (lane actions) stays. Hosted notes hide their header
+   separately (.lane-item-body .view-header). */
+.workspace-leaf-content[data-type="editor-lane"] > .view-header .view-header-nav-buttons,
+.workspace-leaf-content[data-type="editor-lane"] > .view-header .view-header-title-container {
+  display: none !important;
+}
+.workspace-leaf-content[data-type="editor-lane"] > .view-header .view-actions {
+  margin-left: auto;
+}
+
+/* Pin: shown on hover, and always (accent colour) when the note is pinned. A pinned note can't be closed
+   from its header, so its × is hidden. */
+.lane-pin {
+  margin-left: auto;
+  flex: none;
+  padding: 2px 4px;
+  height: auto;
+  background: none;
+  box-shadow: none;
+  color: var(--text-faint, #999);
+  opacity: 0;
+}
+.lane-pin svg {
+  width: 14px;
+  height: 14px;
+}
+.lane-item-header:hover .lane-pin,
+.lane-pin:focus-visible {
+  opacity: 1;
+}
+.lane-item.is-pinned .lane-pin {
+  opacity: 1;
+  color: var(--interactive-accent, #7b6cd9);
+}
+.lane-item.is-pinned .lane-close {
+  display: none;
+}
+.lane-item.is-pinned {
+  border-top: 2px solid var(--interactive-accent, #7b6cd9);
+}
+
+/* Dragging a card by its header: the card fades; a line shows where it (or a dropped note) will land. */
+.lane-item {
+  position: relative;
+}
+.lane-item-header[draggable="true"] {
+  cursor: grab;
+}
+.lane-item.is-lane-dragging {
+  opacity: 0.45;
+}
+.lane-item.lane-drop-before::before,
+.lane-item.lane-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 2;
+  pointer-events: none;
+  background: var(--interactive-accent, #7b6cd9);
+  border-radius: 2px;
+}
+.lane-item.lane-drop-before::before {
+  top: -6px;
+}
+.lane-item.lane-drop-after::after {
+  bottom: -6px;
+}
