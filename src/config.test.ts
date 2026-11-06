@@ -44,10 +44,10 @@ describe("loadSettings", () => {
 });
 
 describe("migrateSettings", () => {
-  it("turns 0.1's locked layout into the default layout and drops maxLanes", () => {
+  it("turns the old locked layout into the default layout and drops lockLayout and maxLanes", () => {
     const s = loadSettings({ lockLayout: true, layout: "50, 50,50", maxLanes: 3 });
     expect(s.defaultLayout).toBe("50, 50,50");
-    expect(s.lockLayout).toBe(true);
+    expect("lockLayout" in s).toBe(false);
     expect("maxLanes" in s).toBe(false);
     expect("layout" in s).toBe(false);
   });

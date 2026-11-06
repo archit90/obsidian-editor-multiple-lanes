@@ -73,15 +73,12 @@ var DEFAULTS = {
   newNotePosition: "top",
   duplicateMode: "copy",
   routeExceptions: "",
-  lockLayout: false,
   defaultLayout: "50, 50",
   accordion: false,
   maxNotesPerLane: 0,
   autoCollapseAfter: 0,
   showFolder: true,
   headerSize: "comfortable",
-  newLaneWidth: "equal",
-  newLaneWidthPx: 500,
   noteHeight: "grow",
   noteMaxHeight: 600,
   showBacklinks: true,
@@ -91,7 +88,6 @@ var DEFAULTS = {
 var LIMITS = {
   maxNotesPerLane: [0, 500],
   autoCollapseAfter: [0, 500],
-  newLaneWidthPx: [120, 4e3],
   noteMaxHeight: [80, 1e4],
   preloadDistance: [0, 5e3]
 };
@@ -100,7 +96,6 @@ var CHOICES = {
   newNotePosition: ["top", "bottom", "after"],
   duplicateMode: ["copy", "jump", "move"],
   headerSize: ["comfortable", "compact"],
-  newLaneWidth: ["equal", "fixed", "copy"],
   noteHeight: ["grow", "cap"],
   dropOnText: ["insert", "open"]
 };
@@ -297,9 +292,6 @@ var Lane = class {
     this.draining = false;
     const root = this.el = tab.contentEl.createDiv({ cls: "lane" });
     root.addEventListener("pointerdown", () => this.plugin.notePointerIn(this), { capture: true });
-    const headerEl = root.createDiv({ cls: "lane-header" });
-    this.labelEl = headerEl.createSpan({ cls: "lane-label" });
-    this.actionsEl = headerEl.createDiv({ cls: "lane-actions" });
     this.emptyEl = root.createDiv({
       cls: "lane-empty",
       text: import_obsidian.Platform.isMobile ? "Open a note, long-press a link \u2192 Open in editor lane, or drag a note here." : "Open a note, Shift-click a link, or drag a note or link here."
@@ -321,26 +313,6 @@ var Lane = class {
   }
   save() {
     this.tab.save();
-  }
-  /** The header: "Lane n" (its note count as a tooltip), the buttons the tab passes (none while locked) and ⋯. */
-  renderHeader(n, buttons) {
-    this.labelEl.setText(`Lane ${n}`);
-    this.labelEl.setAttr("title", `${this.items.length} note${this.items.length === 1 ? "" : "s"}`);
-    this.actionsEl.empty();
-    const add = (icon, title, run) => {
-      const b = this.actionsEl.createEl("button", { cls: "lane-action clickable-icon", attr: { "aria-label": title } });
-      (0, import_obsidian.setIcon)(b, icon);
-      b.addEventListener("click", (e) => {
-        e.stopPropagation();
-        run(e);
-      });
-    };
-    for (const b of buttons) add(b.icon, b.title, () => b.run());
-    add("more-horizontal", "Lane menu", (e) => {
-      const menu = new import_obsidian.Menu();
-      this.tab.addLaneMenuItems(menu, this);
-      menu.showAtMouseEvent(e);
-    });
   }
   /** What a lane shows and how it loads, from the settings; called when made and whenever settings change. */
   applySettings() {
@@ -1139,71 +1111,14 @@ function nearestIndex(starts, pos) {
   }
   return best;
 }
-function shareWithTarget(sizes, index, target, min = 120) {
-  const n = sizes.length;
-  const total = sizes.reduce((s, x) => s + Math.max(0, x), 0);
-  if (n <= 1 || total <= 0 || index < 0 || index >= n) return sizes.map(() => 100 / Math.max(n, 1));
-  const lo = Math.min(min, total / n);
-  const t = Math.min(Math.max(target, lo), total - lo * (n - 1));
-  const others = sizes.reduce((s, x, i) => i === index ? s : s + Math.max(0, x), 0);
-  const rest = total - t;
-  const px = sizes.map((x, i) => i === index ? t : others > 0 ? Math.max(0, x) / others * rest : rest / (n - 1));
-  return px.map((x) => x / total * 100);
-}
 function formatLayout(columns) {
   return columns.map((c) => `${Math.max(1, Math.round(c.width))}${c.rows > 1 ? `x${c.rows}` : ""}`).join(", ");
-}
-function slotOf(columns, index) {
-  let first = 0;
-  for (let col = 0; col < columns.length; col++) {
-    if (index < first + columns[col].rows) return index >= first ? { col, row: index - first } : null;
-    first += columns[col].rows;
-  }
-  return null;
-}
-function firstLaneOf(columns, col) {
-  return columns.slice(0, col).reduce((s, c) => s + c.rows, 0);
 }
 function planRelayout(oldCount, newCount) {
   const slots = Array.from({ length: newCount }, (_, j) => j < oldCount ? j : null);
   const merges = [];
   for (let i = newCount; i < oldCount; i++) merges.push({ from: i, to: mergeTarget(i, newCount) });
   return { slots, merges };
-}
-function planInsert(oldCount, at) {
-  const slots = Array.from({ length: oldCount }, (_, i) => i);
-  slots.splice(Math.min(Math.max(at, 0), oldCount), 0, null);
-  return { slots, merges: [] };
-}
-function planRemove(oldCount, at) {
-  if (oldCount <= 1 || at < 0 || at >= oldCount) return planRelayout(oldCount, oldCount);
-  const slots = Array.from({ length: oldCount }, (_, i) => i).filter((i) => i !== at);
-  return { slots, merges: [{ from: at, to: Math.max(at - 1, 0) }] };
-}
-function insertLane(columns, index, side) {
-  const at = slotOf(columns, index);
-  if (!at) return null;
-  const cols = columns.map((c) => ({ ...c }));
-  if (side === "up" || side === "down") {
-    if (cols[at.col].rows >= MAX_ROWS) return null;
-    cols[at.col].rows++;
-    return { columns: cols, index: side === "up" ? index : index + 1 };
-  }
-  if (cols.length >= MAX_COLUMNS) return null;
-  const half = cols[at.col].width / 2;
-  cols[at.col].width = half;
-  const col = side === "left" ? at.col : at.col + 1;
-  cols.splice(col, 0, { width: half, rows: 1 });
-  return { columns: cols, index: firstLaneOf(cols, col) };
-}
-function removeLane(columns, index) {
-  const at = slotOf(columns, index);
-  if (!at || laneCount(columns) <= 1) return null;
-  const cols = columns.map((c) => ({ ...c }));
-  if (cols[at.col].rows > 1) cols[at.col].rows--;
-  else cols.splice(at.col, 1);
-  const total = cols.reduce((s, c) => s + c.width, 0);
-  return cols.map((c) => ({ ...c, width: c.width / total * 100 }));
 }
 function resizePair(shares, i, delta, min = 5) {
   const out = [...shares];
@@ -1215,8 +1130,8 @@ function resizePair(shares, i, delta, min = 5) {
   out[i + 1] = pair - a;
   return out;
 }
-function effectiveShares(columns, sizes, locked) {
-  const fits = !locked && !!sizes && sizes.for === formatLayout(columns) && sizes.cols.length === columns.length && columns.every((c, i) => sizes.rows[i]?.length === c.rows);
+function effectiveShares(columns, sizes) {
+  const fits = !!sizes && sizes.for === formatLayout(columns) && sizes.cols.length === columns.length && columns.every((c, i) => sizes.rows[i]?.length === c.rows);
   if (fits) return { cols: [...sizes.cols], rows: sizes.rows.map((r) => [...r]) };
   return {
     cols: columns.map((c) => c.width),
@@ -1637,12 +1552,6 @@ function fitLanes(lanes, count) {
 
 // src/lanes-view.ts
 var ONE_LANE = [{ width: 100, rows: 1 }];
-var ADD_LANE = [
-  ["left", "New lane to the left", "arrow-left"],
-  ["right", "New lane to the right", "arrow-right"],
-  ["up", "New lane above", "arrow-up"],
-  ["down", "New lane below", "arrow-down"]
-];
 var LanesView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -1659,7 +1568,7 @@ var LanesView = class extends import_obsidian4.ItemView {
     /** Phones: the lane scrolled into view. */
     this.shownLane = null;
     this.colEls = [];
-    /** What the grid was last drawn for (layout, lock, sizes), so settings changes only redraw when needed. */
+    /** What the grid was last drawn for (layout, sizes), so settings changes only redraw when needed. */
     this.drawn = "";
     this.relaying = Promise.resolve();
     this.navigation = false;
@@ -1769,10 +1678,10 @@ var LanesView = class extends import_obsidian4.ItemView {
         attr: {
           role: "tab",
           "aria-selected": String(lane === shown),
-          "aria-label": `Lane ${i + 1}, ${n} note${n === 1 ? "" : "s"}`
+          "aria-label": `Lane ${i + 1} of ${this.lanes.length}, ${n} note${n === 1 ? "" : "s"}`
         }
       });
-      b.createSpan({ cls: "lanes-switch-num", text: String(i + 1) });
+      b.createSpan({ cls: "lanes-switch-dot" });
       if (n) b.createSpan({ cls: "lanes-switch-count", text: String(n) });
       b.toggleClass("is-active", lane === shown);
       b.addEventListener("click", () => {
@@ -1823,20 +1732,15 @@ var LanesView = class extends import_obsidian4.ItemView {
   layoutInfo() {
     return { text: this.override ?? this.plugin.settings.defaultLayout, own: this.override !== null };
   }
-  get locked() {
-    return this.plugin.settings.lockLayout;
-  }
   drawKey() {
-    return `${formatLayout(this.columns)}|${this.locked}|${JSON.stringify(this.sizes)}`;
+    return `${formatLayout(this.columns)}|${JSON.stringify(this.sizes)}`;
   }
   /** (Re)build the grid: columns with their lanes, and the dividers between them. Lane elements are moved, not remade. */
   draw() {
     if (!this.gridEl) return;
     this.drawn = this.drawKey();
-    const locked = this.locked;
-    const shares = effectiveShares(this.columns, this.sizes, locked);
+    const shares = effectiveShares(this.columns, this.sizes);
     this.gridEl.empty();
-    this.gridEl.toggleClass("is-locked", locked);
     this.colEls = [];
     let n = 0;
     this.columns.forEach((c, ci) => {
@@ -1852,22 +1756,20 @@ var LanesView = class extends import_obsidian4.ItemView {
         colEl.appendChild(lane.el);
       }
     });
-    this.lanes.forEach((l) => this.drawHeader(l));
     if (this.shownLane && !this.lanes.includes(this.shownLane)) this.shownLane = null;
     this.updateSwitcher();
     if (this.isPhone() && this.shownLane) this.showLane(this.shownLane, false);
   }
-  /** A divider between two columns (`kind` "col") or two lanes stacked in column `ci` ("row"). Draggable unless locked. */
+  /** A divider between two columns (`kind` "col") or two lanes stacked in column `ci` ("row"). Always draggable: sizes are the one thing that changes. */
   divider(parent, kind, ci, i) {
     const el = parent.createDiv({ cls: `lanes-divider mod-${kind}` });
-    if (this.locked) return;
     el.setAttr("data-ignore-swipe", "true");
     el.setAttr("aria-label", import_obsidian4.Platform.isMobile ? "Drag to resize" : "Drag to resize; double-click to reset");
     el.addEventListener("dblclick", () => this.resetSizes());
     el.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
-      const base = effectiveShares(this.columns, this.sizes, false);
+      const base = effectiveShares(this.columns, this.sizes);
       const container = kind === "col" ? this.gridEl : this.colEls[ci];
       const total = kind === "col" ? container.clientWidth : container.clientHeight;
       const start = kind === "col" ? e.clientX : e.clientY;
@@ -1907,23 +1809,9 @@ var LanesView = class extends import_obsidian4.ItemView {
     this.draw();
     this.save();
   }
-  drawHeader(lane) {
-    const n = this.lanes.indexOf(lane);
-    if (n < 0) return;
-    const buttons = [];
-    if (!this.locked) {
-      for (const [side, title, icon] of ADD_LANE) {
-        buttons.push({ icon, title, run: () => void this.addLaneBeside(lane, side) });
-      }
-      if (this.lanes.length > 1)
-        buttons.push({ icon: "x", title: "Remove this lane", run: () => this.removeLane(lane) });
-    }
-    lane.renderHeader(n + 1, buttons);
-  }
   /** A lane's notes changed (count shown in its header). */
   laneChanged(lane) {
     if (!this.lanes.includes(lane)) return;
-    this.drawHeader(lane);
     this.updateSwitcher();
   }
   /** Change the layout and move lanes / notes as `plan` says (or by order). Runs one at a time. */
@@ -1952,7 +1840,7 @@ var LanesView = class extends import_obsidian4.ItemView {
     this.draw();
     this.save();
   }
-  /** The settings changed: looks, the lock (buttons, dividers) and, for a tab without its own layout, the default. */
+  /** The settings changed: looks and, for a tab without its own layout, the default layout. */
   applySettings() {
     this.applyLooks();
     for (const l of this.lanes) l.applySettings();
@@ -1981,55 +1869,6 @@ var LanesView = class extends import_obsidian4.ItemView {
   openLayoutDialog() {
     new LayoutModal(this.app, this.plugin, this).open();
   }
-  /** The columns as shown (dragged widths included), as the base for adding or removing a lane. */
-  shownColumns() {
-    const shares = effectiveShares(this.columns, this.sizes, this.locked);
-    return this.columns.map((c, i) => ({ ...c, width: shares.cols[i] }));
-  }
-  /**
-   * Unlocked: a new, empty lane beside `lane`. Left / right is a new column ("New lane width": half of the lane's
-   * column, a fixed width, or the lane's width); up / down stacks one more lane in its column. The tab then has
-   * its own layout. Returns the new lane.
-   */
-  async addLaneBeside(lane, side) {
-    if (this.locked) {
-      this.plugin.lockedNotice();
-      return null;
-    }
-    const index = this.lanes.indexOf(lane);
-    const base = this.shownColumns();
-    const res = insertLane(base, index, side);
-    if (!res) {
-      new import_obsidian4.Notice("This tab can't take more lanes there (at most 8 columns, 6 lanes per column)");
-      return null;
-    }
-    const mode = this.plugin.settings.newLaneWidth;
-    const at = slotOf(res.columns, res.index);
-    const width = this.gridEl?.clientWidth ?? 0;
-    if ((side === "left" || side === "right") && mode !== "equal" && at && width > 0) {
-      const src = slotOf(base, index);
-      const target = mode === "fixed" ? this.plugin.settings.newLaneWidthPx : (src ? base[src.col].width : 0) * width / 100;
-      const px = res.columns.map((c) => c.width * width / 100);
-      const shares = shareWithTarget(px, at.col, target);
-      res.columns.forEach((c, i) => c.width = shares[i]);
-    }
-    this.override = formatLayout(res.columns);
-    this.sizes = null;
-    await this.relayout(planInsert(this.lanes.length, res.index));
-    const created = this.lanes[res.index] ?? null;
-    if (created) this.plugin.lastLane = created;
-    return created;
-  }
-  /** Unlocked: remove `lane`; its notes move to the lane before it. The tab then has its own layout. */
-  removeLane(lane) {
-    if (this.locked) return this.plugin.lockedNotice();
-    const index = this.lanes.indexOf(lane);
-    const cols = removeLane(this.shownColumns(), index);
-    if (!cols) return;
-    this.override = formatLayout(cols);
-    this.sizes = null;
-    void this.relayout(planRemove(this.lanes.length, index));
-  }
   /** The lane opens go to when they don't name one: the one used last here, else the first. */
   currentLane() {
     return this.lastLane && this.lanes.includes(this.lastLane) ? this.lastLane : this.lanes[0] ?? null;
@@ -2056,24 +1895,14 @@ var LanesView = class extends import_obsidian4.ItemView {
     menu.addItem(
       (i) => i.setSection("pane").setTitle("Lane layout\u2026").setIcon("layout-grid").onClick(() => this.openLayoutDialog())
     );
-    if (this.sizes && !this.locked) {
+    if (this.sizes) {
       menu.addItem(
         (i) => i.setSection("pane").setTitle("Reset lane sizes").setIcon("rotate-ccw").onClick(() => this.resetSizes())
       );
     }
   }
-  /** A lane's own menu: its header's ⋯ button and a right-click on its background. */
+  /** A lane's own menu: a right-click (touch: long-press) on its background. */
   addLaneMenuItems(menu, lane) {
-    if (!this.locked) {
-      for (const [side, title, icon] of ADD_LANE) {
-        menu.addItem(
-          (i) => i.setSection("lane").setTitle(title).setIcon(icon).onClick(() => void this.addLaneBeside(lane, side))
-        );
-      }
-      menu.addItem(
-        (i) => i.setSection("lane").setTitle("Remove this lane").setIcon("x").setDisabled(this.lanes.length <= 1).onClick(() => this.removeLane(lane))
-      );
-    }
     const none = !lane.items.length;
     menu.addItem(
       (i) => i.setSection("notes").setTitle("Collapse all notes").setIcon("chevrons-down-up").setDisabled(none).onClick(() => lane.setAllCollapsed(true))
@@ -2246,19 +2075,6 @@ var LanesSettingTab = class extends import_obsidian6.PluginSettingTab {
       { comfortable: "Comfortable", compact: "Compact" },
       "looks"
     );
-    const widthPx = () => this.number(el, "newLaneWidthPx", "Fixed new lane width", "Width in pixels for a new lane", "none");
-    let widthSetting = null;
-    this.choice(
-      el,
-      "newLaneWidth",
-      "New lane width",
-      "How wide a lane added to the left or right of another (lane header buttons, unlocked) starts out.",
-      { equal: "Equal split", fixed: "Fixed width", copy: "Same as the current lane" },
-      "none",
-      () => widthSetting?.settingEl.toggle(this.s.newLaneWidth === "fixed")
-    );
-    widthSetting = widthPx();
-    widthSetting.settingEl.toggle(this.s.newLaneWidth === "fixed");
     let heightSetting = null;
     this.choice(
       el,
@@ -2335,9 +2151,9 @@ var LanesSettingTab = class extends import_obsidian6.PluginSettingTab {
     });
     show(this.s.defaultLayout);
     new import_obsidian6.Setting(el).setName("Reset every tab to the default").setDesc("Open lanes tabs that have their own layout go back to the default layout (notes are kept).").addButton((b) => b.setButtonText("Reset").onClick(() => void this.plugin.resetAllLayouts()));
-    new import_obsidian6.Setting(el).setName("Lock layout").setDesc(
-      "Inside lanes tabs, no ad-hoc changes: no buttons to add or remove lanes, and the dividers between lanes can't be dragged (each tab shows its layout's exact widths). Layouts then change only here (the default) or in a tab's Lane layout\u2026 dialog, which stays available. Tabs themselves stay normal: they can be opened, closed, split, dragged and moved to other windows. Off: drag the dividers to resize (double-click resets), and use the \u2190\u2192\u2191\u2193 and \xD7 buttons in a lane's header to add or remove lanes; that gives the tab its own layout."
-    ).addToggle((t) => t.setValue(this.s.lockLayout).onChange((v) => this.set("lockLayout", v, "layout")));
+    new import_obsidian6.Setting(el).setName("Lane sizes").setDesc(
+      "Lanes always come from a layout (the default here, or a tab's own from its Lane layout\u2026 dialog); only their sizes can change: drag the dividers between lanes (double-click resets). Each tab remembers its sizes across restarts and workspace switches."
+    );
   }
 };
 
@@ -2416,16 +2232,6 @@ var EditorLanesPlugin = class extends import_obsidian7.Plugin {
         const tab = this.currentTab();
         if (!tab) return false;
         if (!checking) tab.openRenameDialog();
-        return true;
-      }
-    });
-    this.addCommand({
-      id: "add-lane",
-      name: "Add a lane to the right of the current lane",
-      checkCallback: (checking) => {
-        const lane = this.settings.lockLayout ? null : this.currentLane();
-        if (!lane) return false;
-        if (!checking) void lane.tab.addLaneBeside(lane, "right");
         return true;
       }
     });
@@ -2556,9 +2362,6 @@ var EditorLanesPlugin = class extends import_obsidian7.Plugin {
     if (now - this.noticeAt < 1e3) return;
     this.noticeAt = now;
     new import_obsidian7.Notice(msg);
-  }
-  lockedNotice() {
-    this.refuse("Lane layout is locked in settings; change it with the tab's Lane layout\u2026 dialog");
   }
   registerWindow(doc) {
     if (this.windowDocs.has(doc)) return;

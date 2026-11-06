@@ -12,7 +12,7 @@ export interface TabState {
   name: string | null;
   /** The tab's own layout ("Lane layout…"), or null: it follows the default from the settings. */
   layout: string | null;
-  /** Divider positions dragged in this tab (unlocked), for the layout they were made for. */
+  /** Divider positions dragged in this tab, for the layout they were made for. */
   sizes: Sizes | null;
   /** Each lane's notes, in lane order (columns left to right, top to bottom in a column). */
   lanes: ItemData[][];

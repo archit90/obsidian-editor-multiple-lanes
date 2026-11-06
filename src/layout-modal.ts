@@ -14,8 +14,8 @@ export function drawPreview(el: HTMLElement, columns: readonly LayoutColumn[]) {
 
 /**
  * "Lane layout…" for one lanes tab (its ⋯ menu, its tab header's menu, a lane's menu, the command): the layout
- * syntax with a live summary and preview, presets, and "Use default from settings". Available while the layout
- * is locked too: it's the one place a tab's layout is changed then, besides the default in the settings.
+ * syntax with a live summary and preview, presets, and "Use default from settings". With the default in the
+ * settings, the only place a tab's layout changes.
  */
 export class LayoutModal extends Modal {
   constructor(

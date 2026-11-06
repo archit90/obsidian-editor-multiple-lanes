@@ -62,11 +62,11 @@ const loose = (o: object) => o as unknown as Record<string, AnyFn>;
  * "Rename lanes tab…" (⋯ menu, tab-header menu, mobile tab switcher, command; tab-name-modal.ts) sets a custom
  * name or a new random one.
  *
- * Lock layout (setting): inside lanes tabs, no ad-hoc structural changes: no add / remove-lane buttons or menu
- * items, no draggable dividers (a tab shows its layout's exact widths). Layouts then change only through the
- * default in the settings or a tab's "Lane layout…" dialog, which stays available. Unlocked, the dividers can be
- * dragged (double-click resets) and each lane header has ←→↑↓ (a new lane beside it) and × (remove it, its notes
- * going to the lane before), which give that tab its own layout.
+ Lanes only ever come from a layout (the default in the settings, or a tab's "Lane layout…" dialog): there are
+ * no buttons or commands to add or remove single lanes, and lanes have no header or number. Only sizes change:
+ * the dividers between lanes can be dragged (double-click resets). Dragged sizes are saved in the tab's view
+ * state (workspace.json, Workspaces); they apply only to the layout they were made for, so changing the tab's
+ * layout starts from its own widths again.
  *
  * "Lanes only" (setting, on by default): every note opened in a main area (any window) goes into a lane
  * instead of a tab; an empty main-area tab (Ctrl+T, "+", the last tab closed) becomes a lanes tab, and note tabs
@@ -199,16 +199,6 @@ export default class EditorLanesPlugin extends Plugin {
         const tab = this.currentTab();
         if (!tab) return false;
         if (!checking) tab.openRenameDialog();
-        return true;
-      },
-    });
-    this.addCommand({
-      id: "add-lane",
-      name: "Add a lane to the right of the current lane",
-      checkCallback: checking => {
-        const lane = this.settings.lockLayout ? null : this.currentLane();
-        if (!lane) return false;
-        if (!checking) void lane.tab.addLaneBeside(lane, "right");
         return true;
       },
     });
@@ -349,7 +339,7 @@ export default class EditorLanesPlugin extends Plugin {
       this.isException = compileExceptions(this.settings.routeExceptions);
       if (this.settings.lanesOnly) void this.sweepMainArea(true);
     }
-    // looks, the lock, and the default layout of every tab that hasn't got its own
+    // looks, and the default layout of every tab that hasn't got its own
     for (const tab of this.allTabs()) tab.applySettings();
     // Backlinks Full View re-checks its views on layout-change: the ones it skipped (or now must skip) in lanes
     if (refresh === "backlinks") this.app.workspace.trigger("layout-change");
@@ -371,10 +361,6 @@ export default class EditorLanesPlugin extends Plugin {
     if (now - this.noticeAt < 1000) return;
     this.noticeAt = now;
     new Notice(msg);
-  }
-
-  lockedNotice() {
-    this.refuse("Lane layout is locked in settings; change it with the tab's Lane layout… dialog");
   }
 
   private registerWindow(doc: Document) {

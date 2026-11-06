@@ -1,25 +1,18 @@
-import { ItemView, Menu, Notice, Platform, ViewStateResult, WorkspaceLeaf, debounce } from "obsidian";
+import { ItemView, Menu, Platform, ViewStateResult, WorkspaceLeaf, debounce } from "obsidian";
 import type EditorLanesPlugin from "./main";
 import { Lane } from "./lane";
 import { LayoutModal } from "./layout-modal";
 import {
   LayoutColumn,
   RelayoutPlan,
-  Side,
   Sizes,
   effectiveShares,
   formatLayout,
-  insertLane,
   laneCount,
   nearestIndex,
   parseLayout,
-  planInsert,
   planRelayout,
-  planRemove,
-  removeLane,
   resizePair,
-  shareWithTarget,
-  slotOf,
 } from "./layout";
 import { TabNameModal } from "./tab-name-modal";
 import { TAB_TITLE_PREFIX } from "./tab-names";
@@ -27,21 +20,13 @@ import { fitLanes, readTabState } from "./tab-state";
 import { LEGACY_VIEW_TYPE, VIEW_TYPE } from "./types";
 
 const ONE_LANE: LayoutColumn[] = [{ width: 100, rows: 1 }];
-/** The lane-adding buttons and menu items (unlocked): side, title, icon. */
-const ADD_LANE: [Side, string, string][] = [
-  ["left", "New lane to the left", "arrow-left"],
-  ["right", "New lane to the right", "arrow-right"],
-  ["up", "New lane above", "arrow-up"],
-  ["down", "New lane below", "arrow-down"],
-];
-
 /**
  * A lanes tab: one Obsidian tab (an ItemView, so it can be split, dragged, popped out, closed and restored like
  * any tab) that lays out all its lanes itself, as DOM columns of stacked lanes, from a layout definition: the
  * default from the settings, or the tab's own ("Lane layout…", saved in its view state). Lanes are Lane objects
- * inside it, not leaves. With the layout unlocked, dividers between columns and rows can be dragged (sizes saved
- * in the view state too) and each lane header has buttons to add a lane beside it or remove it, which give the
- * tab its own layout.
+ * inside it, not leaves. Lanes have no header and can't be added or removed one by one: they
+ * only come from the layout. Dividers between columns and rows can always be dragged (sizes
+ * saved in the view state too).
  *
  * Phones (`body.is-phone`) show one lane at a time: the lanes sit side by side in a horizontal scroller that
  * snaps to each lane (swipe between them), with a row of lane buttons above (the lane switcher). The layout,
@@ -67,7 +52,7 @@ export class LanesView extends ItemView {
   /** Phones: the lane scrolled into view. */
   private shownLane: Lane | null = null;
   private colEls: HTMLElement[] = [];
-  /** What the grid was last drawn for (layout, lock, sizes), so settings changes only redraw when needed. */
+  /** What the grid was last drawn for (layout, sizes), so settings changes only redraw when needed. */
   private drawn = "";
   private relaying: Promise<void> = Promise.resolve();
 
@@ -194,10 +179,11 @@ export class LanesView extends ItemView {
         attr: {
           role: "tab",
           "aria-selected": String(lane === shown),
-          "aria-label": `Lane ${i + 1}, ${n} note${n === 1 ? "" : "s"}`,
+          "aria-label": `Lane ${i + 1} of ${this.lanes.length}, ${n} note${n === 1 ? "" : "s"}`,
         },
       });
-      b.createSpan({ cls: "lanes-switch-num", text: String(i + 1) });
+      // a dot per lane (lanes aren't numbered), with its note count
+      b.createSpan({ cls: "lanes-switch-dot" });
       if (n) b.createSpan({ cls: "lanes-switch-count", text: String(n) });
       b.toggleClass("is-active", lane === shown);
       b.addEventListener("click", () => {
@@ -257,22 +243,16 @@ export class LanesView extends ItemView {
     return { text: this.override ?? this.plugin.settings.defaultLayout, own: this.override !== null };
   }
 
-  private get locked() {
-    return this.plugin.settings.lockLayout;
-  }
-
   private drawKey() {
-    return `${formatLayout(this.columns)}|${this.locked}|${JSON.stringify(this.sizes)}`;
+    return `${formatLayout(this.columns)}|${JSON.stringify(this.sizes)}`;
   }
 
   /** (Re)build the grid: columns with their lanes, and the dividers between them. Lane elements are moved, not remade. */
   private draw() {
     if (!this.gridEl) return;
     this.drawn = this.drawKey();
-    const locked = this.locked;
-    const shares = effectiveShares(this.columns, this.sizes, locked);
+    const shares = effectiveShares(this.columns, this.sizes);
     this.gridEl.empty();
-    this.gridEl.toggleClass("is-locked", locked);
     this.colEls = [];
     let n = 0;
     this.columns.forEach((c, ci) => {
@@ -288,17 +268,15 @@ export class LanesView extends ItemView {
         colEl.appendChild(lane.el);
       }
     });
-    this.lanes.forEach(l => this.drawHeader(l));
     if (this.shownLane && !this.lanes.includes(this.shownLane)) this.shownLane = null;
     this.updateSwitcher();
     // phones: the redrawn grid starts scrolled to the left; go back to the lane shown before
     if (this.isPhone() && this.shownLane) this.showLane(this.shownLane, false);
   }
 
-  /** A divider between two columns (`kind` "col") or two lanes stacked in column `ci` ("row"). Draggable unless locked. */
+  /** A divider between two columns (`kind` "col") or two lanes stacked in column `ci` ("row"). Always draggable: sizes are the one thing that changes. */
   private divider(parent: HTMLElement, kind: "col" | "row", ci: number, i: number) {
     const el = parent.createDiv({ cls: `lanes-divider mod-${kind}` });
-    if (this.locked) return;
     // touch: a drag here must not open Obsidian's mobile sidebars (their swipe skips this attribute)
     el.setAttr("data-ignore-swipe", "true");
     el.setAttr("aria-label", Platform.isMobile ? "Drag to resize" : "Drag to resize; double-click to reset");
@@ -306,7 +284,7 @@ export class LanesView extends ItemView {
     el.addEventListener("pointerdown", (e: PointerEvent) => {
       if (e.button !== 0) return;
       e.preventDefault();
-      const base = effectiveShares(this.columns, this.sizes, false);
+      const base = effectiveShares(this.columns, this.sizes);
       const container = kind === "col" ? this.gridEl : this.colEls[ci];
       const total = kind === "col" ? container.clientWidth : container.clientHeight;
       const start = kind === "col" ? e.clientX : e.clientY;
@@ -351,24 +329,9 @@ export class LanesView extends ItemView {
     this.save();
   }
 
-  private drawHeader(lane: Lane) {
-    const n = this.lanes.indexOf(lane);
-    if (n < 0) return;
-    const buttons: { icon: string; title: string; run: () => void }[] = [];
-    if (!this.locked) {
-      for (const [side, title, icon] of ADD_LANE) {
-        buttons.push({ icon, title, run: () => void this.addLaneBeside(lane, side) });
-      }
-      if (this.lanes.length > 1)
-        buttons.push({ icon: "x", title: "Remove this lane", run: () => this.removeLane(lane) });
-    }
-    lane.renderHeader(n + 1, buttons);
-  }
-
   /** A lane's notes changed (count shown in its header). */
   laneChanged(lane: Lane) {
     if (!this.lanes.includes(lane)) return;
-    this.drawHeader(lane);
     this.updateSwitcher();
   }
 
@@ -401,7 +364,7 @@ export class LanesView extends ItemView {
     this.save();
   }
 
-  /** The settings changed: looks, the lock (buttons, dividers) and, for a tab without its own layout, the default. */
+  /** The settings changed: looks and, for a tab without its own layout, the default layout. */
   applySettings() {
     this.applyLooks();
     for (const l of this.lanes) l.applySettings();
@@ -434,59 +397,6 @@ export class LanesView extends ItemView {
 
   openLayoutDialog() {
     new LayoutModal(this.app, this.plugin, this).open();
-  }
-
-  /** The columns as shown (dragged widths included), as the base for adding or removing a lane. */
-  private shownColumns(): LayoutColumn[] {
-    const shares = effectiveShares(this.columns, this.sizes, this.locked);
-    return this.columns.map((c, i) => ({ ...c, width: shares.cols[i] }));
-  }
-
-  /**
-   * Unlocked: a new, empty lane beside `lane`. Left / right is a new column ("New lane width": half of the lane's
-   * column, a fixed width, or the lane's width); up / down stacks one more lane in its column. The tab then has
-   * its own layout. Returns the new lane.
-   */
-  async addLaneBeside(lane: Lane, side: Side): Promise<Lane | null> {
-    if (this.locked) {
-      this.plugin.lockedNotice();
-      return null;
-    }
-    const index = this.lanes.indexOf(lane);
-    const base = this.shownColumns();
-    const res = insertLane(base, index, side);
-    if (!res) {
-      new Notice("This tab can't take more lanes there (at most 8 columns, 6 lanes per column)");
-      return null;
-    }
-    const mode = this.plugin.settings.newLaneWidth;
-    const at = slotOf(res.columns, res.index);
-    const width = this.gridEl?.clientWidth ?? 0;
-    if ((side === "left" || side === "right") && mode !== "equal" && at && width > 0) {
-      const src = slotOf(base, index);
-      const target =
-        mode === "fixed" ? this.plugin.settings.newLaneWidthPx : ((src ? base[src.col].width : 0) * width) / 100;
-      const px = res.columns.map(c => (c.width * width) / 100);
-      const shares = shareWithTarget(px, at.col, target);
-      res.columns.forEach((c, i) => (c.width = shares[i]));
-    }
-    this.override = formatLayout(res.columns);
-    this.sizes = null;
-    await this.relayout(planInsert(this.lanes.length, res.index));
-    const created = this.lanes[res.index] ?? null;
-    if (created) this.plugin.lastLane = created;
-    return created;
-  }
-
-  /** Unlocked: remove `lane`; its notes move to the lane before it. The tab then has its own layout. */
-  removeLane(lane: Lane) {
-    if (this.locked) return this.plugin.lockedNotice();
-    const index = this.lanes.indexOf(lane);
-    const cols = removeLane(this.shownColumns(), index);
-    if (!cols) return;
-    this.override = formatLayout(cols);
-    this.sizes = null;
-    void this.relayout(planRemove(this.lanes.length, index));
   }
 
   /** The lane opens go to when they don't name one: the one used last here, else the first. */
@@ -527,7 +437,7 @@ export class LanesView extends ItemView {
         .setIcon("layout-grid")
         .onClick(() => this.openLayoutDialog()),
     );
-    if (this.sizes && !this.locked) {
+    if (this.sizes) {
       menu.addItem(i =>
         i
           .setSection("pane")
@@ -538,27 +448,8 @@ export class LanesView extends ItemView {
     }
   }
 
-  /** A lane's own menu: its header's ⋯ button and a right-click on its background. */
+  /** A lane's own menu: a right-click (touch: long-press) on its background. */
   addLaneMenuItems(menu: Menu, lane: Lane) {
-    if (!this.locked) {
-      for (const [side, title, icon] of ADD_LANE) {
-        menu.addItem(i =>
-          i
-            .setSection("lane")
-            .setTitle(title)
-            .setIcon(icon)
-            .onClick(() => void this.addLaneBeside(lane, side)),
-        );
-      }
-      menu.addItem(i =>
-        i
-          .setSection("lane")
-          .setTitle("Remove this lane")
-          .setIcon("x")
-          .setDisabled(this.lanes.length <= 1)
-          .onClick(() => this.removeLane(lane)),
-      );
-    }
     const none = !lane.items.length;
     menu.addItem(i =>
       i

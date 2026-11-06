@@ -32,7 +32,7 @@
   outline-offset: -4px;
 }
 
-/* Dividers: draggable (unlocked) with a highlight on hover; a plain line while the layout is locked. */
+/* Dividers: always draggable (lane sizes are the one thing that changes), with a highlight on hover. */
 .lanes-divider {
   flex: none;
   background: var(--background-modifier-border, #ddd);
@@ -65,51 +65,9 @@
   top: -3px;
   bottom: -3px;
 }
-.lanes-grid:not(.is-locked) .lanes-divider:hover,
+.lanes-divider:hover,
 .lanes-divider.is-dragging {
   background: var(--interactive-accent, #7b6cd9);
-}
-.lanes-grid.is-locked .lanes-divider {
-  cursor: default;
-}
-.lanes-grid.is-locked .lanes-divider::after {
-  display: none;
-}
-
-/* A lane's small header: "Lane n", its buttons (unlocked: add a lane beside it, remove it) and ⋯. */
-.lane-header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-height: 24px;
-  padding: 0 4px 0 8px;
-  font-size: var(--font-ui-smaller, 0.8em);
-  color: var(--text-muted, #888);
-  border-bottom: 1px solid var(--background-modifier-border, #ddd);
-}
-.lane-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lane-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-}
-.lane-action {
-  padding: 2px;
-  height: auto;
-  opacity: 0.35;
-}
-.lane-action svg {
-  width: 14px;
-  height: 14px;
-}
-.lane-header:hover .lane-action,
-.lane-action:focus-visible {
-  opacity: 1;
 }
 
 .lane-list {
@@ -509,6 +467,16 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   background: var(--interactive-accent, #7b6cd9);
   color: var(--text-on-accent, #fff);
 }
+/* lanes aren't numbered: a dot per lane, filled for the one shown */
+.lanes-switch-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+}
+.lanes-switch.is-active .lanes-switch-dot {
+  background: currentColor;
+}
 .lanes-switch-count {
   font-size: 0.8em;
   opacity: 0.75;
@@ -539,20 +507,8 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   border-left: 1px solid var(--background-modifier-border, #ddd);
 }
 
-/* Touch-sized hit areas (at least 40px), the pin and lane buttons always visible (no hover on touch), no text
+/* Touch-sized hit areas (at least 40px), the pin button always visible (no hover on touch), no text
    selection or callout on a long-press of a card header (it opens the card menu or starts a drag). */
-.is-mobile .lane-header {
-  min-height: 40px;
-}
-.is-mobile .lane-action {
-  opacity: 1;
-  min-width: 36px;
-  min-height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.is-mobile .lane-action svg,
 .is-mobile .lane-pin svg {
   width: 18px;
   height: 18px;

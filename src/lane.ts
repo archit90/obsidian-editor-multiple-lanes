@@ -30,8 +30,6 @@ export class Lane {
   items: Item[] = [];
   /** The lane's element: a small header, then the list of cards. The tab moves it when its layout changes. */
   readonly el: HTMLElement;
-  private labelEl: HTMLElement;
-  private actionsEl: HTMLElement;
   private listEl: HTMLElement;
   private emptyEl: HTMLElement;
   private observer: IntersectionObserver | null = null;
@@ -48,9 +46,6 @@ export class Lane {
     const root = (this.el = tab.contentEl.createDiv({ cls: "lane" }));
     // pointerdown: mouse, pen and touch alike (a tap's emulated mousedown can be skipped)
     root.addEventListener("pointerdown", () => this.plugin.notePointerIn(this), { capture: true });
-    const headerEl = root.createDiv({ cls: "lane-header" });
-    this.labelEl = headerEl.createSpan({ cls: "lane-label" });
-    this.actionsEl = headerEl.createDiv({ cls: "lane-actions" });
     this.emptyEl = root.createDiv({
       cls: "lane-empty",
       text: Platform.isMobile
@@ -60,8 +55,8 @@ export class Lane {
     this.listEl = root.createDiv({ cls: "lane-list" });
     this.updateEmpty();
     this.setupDrop(root);
-    // Right-click (touch: long-press) on the lane's background (not a card): the lane's menu, as in its
-    // header's ⋯ button. Obsidian turns a long-press into a contextmenu event on iOS; Android sends one itself.
+    // Right-click (touch: long-press) on the lane's background (not a card): the lane's menu (lanes have no
+    // header of their own: the layout comes from the settings or the tab's "Lane layout…"). Obsidian turns a long-press into a contextmenu event on iOS; Android sends one itself.
     root.addEventListener("contextmenu", e => {
       if (asEl(e.target)?.closest(".lane-item")) return;
       e.preventDefault();
@@ -78,27 +73,6 @@ export class Lane {
 
   private save() {
     this.tab.save();
-  }
-
-  /** The header: "Lane n" (its note count as a tooltip), the buttons the tab passes (none while locked) and ⋯. */
-  renderHeader(n: number, buttons: { icon: string; title: string; run: () => void }[]) {
-    this.labelEl.setText(`Lane ${n}`);
-    this.labelEl.setAttr("title", `${this.items.length} note${this.items.length === 1 ? "" : "s"}`);
-    this.actionsEl.empty();
-    const add = (icon: string, title: string, run: (e: MouseEvent) => void) => {
-      const b = this.actionsEl.createEl("button", { cls: "lane-action clickable-icon", attr: { "aria-label": title } });
-      setIcon(b, icon);
-      b.addEventListener("click", e => {
-        e.stopPropagation();
-        run(e);
-      });
-    };
-    for (const b of buttons) add(b.icon, b.title, () => b.run());
-    add("more-horizontal", "Lane menu", e => {
-      const menu = new Menu();
-      this.tab.addLaneMenuItems(menu, this);
-      menu.showAtMouseEvent(e);
-    });
   }
 
   /** What a lane shows and how it loads, from the settings; called when made and whenever settings change. */

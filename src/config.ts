@@ -7,8 +7,6 @@ export type NewNotePosition = "top" | "bottom" | "after";
 /** A note already open in another lane: open another copy here, jump to the open one, or move it here. */
 export type DuplicateMode = "copy" | "jump" | "move";
 export type HeaderSize = "comfortable" | "compact";
-/** Width of a lane added left / right of another (unlocked): half of that lane's column, a fixed width, or its width. */
-export type NewLaneWidth = "equal" | "fixed" | "copy";
 export type NoteHeight = "grow" | "cap";
 /** A note or link dropped onto a note's text: Obsidian inserts a link, or the lane opens it. */
 export type DropOnText = "insert" | "open";
@@ -21,8 +19,6 @@ export interface Settings {
   duplicateMode: DuplicateMode;
   routeExceptions: string; // one pattern per line, see exceptions.ts
   // Lane layout
-  /** No ad-hoc lane changes inside lanes tabs: layouts change only here or in a tab's "Lane layout…" dialog. */
-  lockLayout: boolean;
   /** The layout every lanes tab starts with and follows unless it has its own (see layout.ts parseLayout). */
   defaultLayout: string;
   // Keeping lanes tidy
@@ -32,8 +28,6 @@ export interface Settings {
   // Looks
   showFolder: boolean;
   headerSize: HeaderSize;
-  newLaneWidth: NewLaneWidth;
-  newLaneWidthPx: number;
   noteHeight: NoteHeight;
   noteMaxHeight: number; // px, with noteHeight "cap"
   // Performance
@@ -50,15 +44,12 @@ export const DEFAULTS: Settings = {
   newNotePosition: "top",
   duplicateMode: "copy",
   routeExceptions: "",
-  lockLayout: false,
   defaultLayout: "50, 50",
   accordion: false,
   maxNotesPerLane: 0,
   autoCollapseAfter: 0,
   showFolder: true,
   headerSize: "comfortable",
-  newLaneWidth: "equal",
-  newLaneWidthPx: 500,
   noteHeight: "grow",
   noteMaxHeight: 600,
   showBacklinks: true,
@@ -70,7 +61,6 @@ export const DEFAULTS: Settings = {
 export const LIMITS = {
   maxNotesPerLane: [0, 500],
   autoCollapseAfter: [0, 500],
-  newLaneWidthPx: [120, 4000],
   noteMaxHeight: [80, 10000],
   preloadDistance: [0, 5000],
 } as const satisfies Partial<Record<keyof Settings, readonly [number, number]>>;
@@ -80,7 +70,6 @@ const CHOICES: { [K in keyof Settings]?: readonly string[] } = {
   newNotePosition: ["top", "bottom", "after"],
   duplicateMode: ["copy", "jump", "move"],
   headerSize: ["comfortable", "compact"],
-  newLaneWidth: ["equal", "fixed", "copy"],
   noteHeight: ["grow", "cap"],
   dropOnText: ["insert", "open"],
 };
@@ -121,9 +110,9 @@ export function loadSettings(saved: unknown): Settings {
 }
 
 /**
- * Settings saved by the one-lane-per-tab version, renamed: `layout` (the locked layout) is now `defaultLayout`, the layout every
+ * Settings saved by the one-lane-per-tab version, renamed: `layout` (the old locked layout) is now `defaultLayout`, the layout every
  * lanes tab starts with. The old `layout` and `maxLanes` (gone: a tab's lanes are its layout) are then dropped by
- * loadSettings with the other unknown keys. `lockLayout` keeps its key; what it locks changed (see the settings tab).
+ * loadSettings with the other unknown keys, as is `lockLayout` (gone: layouts are always fixed, only sizes change).
  */
 export function migrateSettings(saved: unknown): Record<string, unknown> {
   const raw: Record<string, unknown> =

@@ -90,44 +90,9 @@ export function nearestIndex(starts: readonly number[], pos: number): number {
   return best;
 }
 
-/**
- * Flex shares (percent, adding up to 100) for the children of a split, given their current sizes in px, so
- * that child `index` gets `target` px and the others share the rest in their current proportions. No child
- * gets less than `min` px where the total allows it.
- */
-export function shareWithTarget(sizes: readonly number[], index: number, target: number, min = 120): number[] {
-  const n = sizes.length;
-  const total = sizes.reduce((s, x) => s + Math.max(0, x), 0);
-  if (n <= 1 || total <= 0 || index < 0 || index >= n) return sizes.map(() => 100 / Math.max(n, 1));
-  const lo = Math.min(min, total / n);
-  const t = Math.min(Math.max(target, lo), total - lo * (n - 1));
-  const others = sizes.reduce((s, x, i) => (i === index ? s : s + Math.max(0, x)), 0);
-  const rest = total - t;
-  const px = sizes.map((x, i) => (i === index ? t : others > 0 ? (Math.max(0, x) / others) * rest : rest / (n - 1)));
-  return px.map(x => (x / total) * 100);
-}
-
 /** A layout written back in the settings syntax, widths rounded: "40, 30x2, 30". */
 export function formatLayout(columns: readonly LayoutColumn[]): string {
   return columns.map(c => `${Math.max(1, Math.round(c.width))}${c.rows > 1 ? `x${c.rows}` : ""}`).join(", ");
-}
-
-/**
- * Where lane `index` sits: its column and its row in that column. Lanes are numbered in layout order: columns
- * left to right, and top to bottom within a column. Null past the last lane.
- */
-export function slotOf(columns: readonly LayoutColumn[], index: number): { col: number; row: number } | null {
-  let first = 0;
-  for (let col = 0; col < columns.length; col++) {
-    if (index < first + columns[col].rows) return index >= first ? { col, row: index - first } : null;
-    first += columns[col].rows;
-  }
-  return null;
-}
-
-/** The number of the first lane in column `col`. */
-export function firstLaneOf(columns: readonly LayoutColumn[], col: number): number {
-  return columns.slice(0, col).reduce((s, c) => s + c.rows, 0);
 }
 
 /**
@@ -145,59 +110,6 @@ export function planRelayout(oldCount: number, newCount: number): RelayoutPlan {
   const merges = [];
   for (let i = newCount; i < oldCount; i++) merges.push({ from: i, to: mergeTarget(i, newCount) });
   return { slots, merges };
-}
-
-/** A new, empty lane at position `at`; the others keep their notes. */
-export function planInsert(oldCount: number, at: number): RelayoutPlan {
-  const slots: (number | null)[] = Array.from({ length: oldCount }, (_, i) => i);
-  slots.splice(Math.min(Math.max(at, 0), oldCount), 0, null);
-  return { slots, merges: [] };
-}
-
-/** Lane `at` goes; its notes move to the lane before it (the first lane's to the new first lane). */
-export function planRemove(oldCount: number, at: number): RelayoutPlan {
-  if (oldCount <= 1 || at < 0 || at >= oldCount) return planRelayout(oldCount, oldCount);
-  const slots: (number | null)[] = Array.from({ length: oldCount }, (_, i) => i).filter(i => i !== at);
-  return { slots, merges: [{ from: at, to: Math.max(at - 1, 0) }] };
-}
-
-export type Side = "left" | "right" | "up" | "down";
-
-/**
- * The layout with a new lane beside lane `index`: left / right is a new column next to the lane's column, which
- * gives it half its width; up / down is one more lane stacked in the lane's column. `index` in the result is the
- * new lane's number. Null if the layout would get too big (MAX_COLUMNS, MAX_ROWS) or `index` isn't a lane.
- */
-export function insertLane(
-  columns: readonly LayoutColumn[],
-  index: number,
-  side: Side,
-): { columns: LayoutColumn[]; index: number } | null {
-  const at = slotOf(columns, index);
-  if (!at) return null;
-  const cols = columns.map(c => ({ ...c }));
-  if (side === "up" || side === "down") {
-    if (cols[at.col].rows >= MAX_ROWS) return null;
-    cols[at.col].rows++;
-    return { columns: cols, index: side === "up" ? index : index + 1 };
-  }
-  if (cols.length >= MAX_COLUMNS) return null;
-  const half = cols[at.col].width / 2;
-  cols[at.col].width = half;
-  const col = side === "left" ? at.col : at.col + 1;
-  cols.splice(col, 0, { width: half, rows: 1 });
-  return { columns: cols, index: firstLaneOf(cols, col) };
-}
-
-/** The layout without lane `index` (a column left empty goes, the others share its width). Null for the last lane. */
-export function removeLane(columns: readonly LayoutColumn[], index: number): LayoutColumn[] | null {
-  const at = slotOf(columns, index);
-  if (!at || laneCount(columns) <= 1) return null;
-  const cols = columns.map(c => ({ ...c }));
-  if (cols[at.col].rows > 1) cols[at.col].rows--;
-  else cols.splice(at.col, 1);
-  const total = cols.reduce((s, c) => s + c.width, 0);
-  return cols.map(c => ({ ...c, width: (c.width / total) * 100 }));
 }
 
 /**
@@ -223,16 +135,13 @@ export interface Sizes {
 }
 
 /**
- * The shares a tab shows: its dragged sizes when they were made for this very layout (and the layout isn't
- * locked), else the layout's own widths with stacked lanes sharing their column equally.
+ * The shares a tab shows: its dragged sizes when they were made for this very layout, else the layout's own widths with stacked lanes sharing their column equally.
  */
 export function effectiveShares(
   columns: readonly LayoutColumn[],
   sizes: Sizes | null,
-  locked: boolean,
 ): { cols: number[]; rows: number[][] } {
   const fits =
-    !locked &&
     !!sizes &&
     sizes.for === formatLayout(columns) &&
     sizes.cols.length === columns.length &&

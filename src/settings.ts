@@ -169,20 +169,6 @@ export class LanesSettingTab extends PluginSettingTab {
       { comfortable: "Comfortable", compact: "Compact" },
       "looks",
     );
-    const widthPx = () =>
-      this.number(el, "newLaneWidthPx", "Fixed new lane width", "Width in pixels for a new lane", "none");
-    let widthSetting: Setting | null = null;
-    this.choice(
-      el,
-      "newLaneWidth",
-      "New lane width",
-      "How wide a lane added to the left or right of another (lane header buttons, unlocked) starts out.",
-      { equal: "Equal split", fixed: "Fixed width", copy: "Same as the current lane" },
-      "none",
-      () => widthSetting?.settingEl.toggle(this.s.newLaneWidth === "fixed"),
-    );
-    widthSetting = widthPx();
-    widthSetting.settingEl.toggle(this.s.newLaneWidth === "fixed");
     let heightSetting: Setting | null = null;
     this.choice(
       el,
@@ -270,10 +256,9 @@ export class LanesSettingTab extends PluginSettingTab {
       .setDesc("Open lanes tabs that have their own layout go back to the default layout (notes are kept).")
       .addButton(b => b.setButtonText("Reset").onClick(() => void this.plugin.resetAllLayouts()));
     new Setting(el)
-      .setName("Lock layout")
+      .setName("Lane sizes")
       .setDesc(
-        "Inside lanes tabs, no ad-hoc changes: no buttons to add or remove lanes, and the dividers between lanes can't be dragged (each tab shows its layout's exact widths). Layouts then change only here (the default) or in a tab's Lane layout… dialog, which stays available. Tabs themselves stay normal: they can be opened, closed, split, dragged and moved to other windows. Off: drag the dividers to resize (double-click resets), and use the ←→↑↓ and × buttons in a lane's header to add or remove lanes; that gives the tab its own layout.",
-      )
-      .addToggle(t => t.setValue(this.s.lockLayout).onChange(v => this.set("lockLayout", v, "layout")));
+        "Lanes always come from a layout (the default here, or a tab's own from its Lane layout… dialog); only their sizes can change: drag the dividers between lanes (double-click resets). Each tab remembers its sizes across restarts and workspace switches.",
+      );
   }
 }

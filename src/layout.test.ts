@@ -2,21 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   describeLayout,
   effectiveShares,
-  firstLaneOf,
   formatLayout,
-  insertLane,
   laneCount,
   mergeTarget,
   nearestIndex,
   PRESETS,
   parseLayout,
-  planInsert,
   planRelayout,
-  planRemove,
-  removeLane,
   resizePair,
-  shareWithTarget,
-  slotOf,
   wrapStep,
 } from "./layout";
 
@@ -97,51 +90,21 @@ describe("wrapStep", () => {
   });
 });
 
-describe("shareWithTarget", () => {
-  const round = (a: number[]) => a.map(x => Math.round(x));
-  it("gives the new child its width and scales the others", () => {
-    expect(round(shareWithTarget([500, 250, 250], 2, 500))).toEqual([33, 17, 50]);
-  });
-  it("keeps every child at least `min` wide where it can", () => {
-    expect(round(shareWithTarget([500, 500], 1, 990, 100))).toEqual([10, 90]);
-    expect(round(shareWithTarget([500, 500], 1, 10, 100))).toEqual([90, 10]);
-  });
-  it("adds up to 100", () => {
-    const s = shareWithTarget([300, 200, 100, 400], 1, 350);
-    expect(s.reduce((a, b) => a + b, 0)).toBeCloseTo(100);
-  });
-  it("splits evenly when there's nothing to measure", () => {
-    expect(shareWithTarget([0, 0], 0, 300)).toEqual([50, 50]);
-    expect(shareWithTarget([400], 0, 300)).toEqual([100]);
-  });
-});
-
 const cols = (t: string) => {
   const p = parseLayout(t);
   if (!p.ok) throw new Error(p.error);
   return p.columns;
 };
 
-describe("formatLayout / slotOf / firstLaneOf", () => {
+describe("formatLayout", () => {
   it("writes a layout back in the settings syntax", () => {
     expect(formatLayout(cols("40, 30x2, 30"))).toBe("40, 30x2, 30");
     expect(formatLayout(cols("1, 1, 1"))).toBe("33, 33, 33");
     expect(parseLayout(formatLayout(cols("2, 1x3"))).ok).toBe(true);
   });
-  it("numbers lanes by column, top to bottom", () => {
-    const c = cols("40, 30x2, 30");
-    expect([0, 1, 2, 3].map(i => slotOf(c, i))).toEqual([
-      { col: 0, row: 0 },
-      { col: 1, row: 0 },
-      { col: 1, row: 1 },
-      { col: 2, row: 0 },
-    ]);
-    expect(slotOf(c, 4)).toBeNull();
-    expect(firstLaneOf(c, 2)).toBe(3);
-  });
 });
 
-describe("planRelayout / planInsert / planRemove", () => {
+describe("planRelayout", () => {
   it("keeps lanes in order, adds empty ones and wraps the extra ones round", () => {
     expect(planRelayout(2, 3)).toEqual({ slots: [0, 1, null], merges: [] });
     expect(planRelayout(5, 2)).toEqual({
@@ -154,42 +117,6 @@ describe("planRelayout / planInsert / planRemove", () => {
     });
     expect(planRelayout(3, 3).merges).toEqual([]);
   });
-  it("inserts an empty lane where asked", () => {
-    expect(planInsert(3, 1).slots).toEqual([0, null, 1, 2]);
-    expect(planInsert(2, 2).slots).toEqual([0, 1, null]);
-  });
-  it("removes a lane, handing its notes to the lane before it", () => {
-    expect(planRemove(3, 1)).toEqual({ slots: [0, 2], merges: [{ from: 1, to: 0 }] });
-    expect(planRemove(3, 0)).toEqual({ slots: [1, 2], merges: [{ from: 0, to: 0 }] });
-    expect(planRemove(1, 0)).toEqual({ slots: [0], merges: [] });
-  });
-});
-
-describe("insertLane / removeLane", () => {
-  it("adds a column beside a lane, halving its column", () => {
-    const r = insertLane(cols("50, 50"), 1, "right");
-    expect(r && formatLayout(r.columns)).toBe("50, 25, 25");
-    expect(r?.index).toBe(2);
-    const l = insertLane(cols("50, 50x2"), 2, "left");
-    expect(l && formatLayout(l.columns)).toBe("50, 25, 25x2");
-    expect(l?.index).toBe(1);
-  });
-  it("stacks a lane above or below", () => {
-    const d = insertLane(cols("50, 50"), 0, "down");
-    expect(d && formatLayout(d.columns)).toBe("50x2, 50");
-    expect(d?.index).toBe(1);
-    expect(insertLane(cols("50, 50"), 1, "up")?.index).toBe(1);
-  });
-  it("refuses past the limits or for a lane that isn't there", () => {
-    expect(insertLane(cols("1,1,1,1,1,1,1,1"), 0, "right")).toBeNull();
-    expect(insertLane(cols("x6"), 0, "down")).toBeNull();
-    expect(insertLane(cols("50"), 3, "down")).toBeNull();
-  });
-  it("removes a lane, its column going when it's the last in it", () => {
-    expect(formatLayout(removeLane(cols("50, 50x2"), 1)!)).toBe("50, 50");
-    expect(formatLayout(removeLane(cols("50, 25, 25"), 0)!)).toBe("50, 50");
-    expect(removeLane(cols("100"), 0)).toBeNull();
-  });
 });
 
 describe("resizePair / effectiveShares", () => {
@@ -198,13 +125,12 @@ describe("resizePair / effectiveShares", () => {
     expect(resizePair([50, 30, 20], 1, 100)).toEqual([50, 45, 5]);
     expect(resizePair([50, 50], 1, 10)).toEqual([50, 50]);
   });
-  it("uses dragged sizes only for the layout they were made for, and not while locked", () => {
+  it("uses dragged sizes only for the layout they were made for", () => {
     const c = cols("50, 50x2");
     const sizes = { for: "50, 50x2", cols: [30, 70], rows: [[100], [20, 80]] };
-    expect(effectiveShares(c, sizes, false)).toEqual({ cols: [30, 70], rows: [[100], [20, 80]] });
-    expect(effectiveShares(c, sizes, true)).toEqual({ cols: [50, 50], rows: [[100], [50, 50]] });
-    expect(effectiveShares(cols("40, 60x2"), sizes, false).cols).toEqual([40, 60]);
-    expect(effectiveShares(c, null, false).rows).toEqual([[100], [50, 50]]);
+    expect(effectiveShares(c, sizes)).toEqual({ cols: [30, 70], rows: [[100], [20, 80]] });
+    expect(effectiveShares(cols("40, 60x2"), sizes).cols).toEqual([40, 60]);
+    expect(effectiveShares(c, null).rows).toEqual([[100], [50, 50]]);
   });
 });
 
