@@ -79,6 +79,18 @@ export function wrapStep<T>(order: readonly T[], current: T, step: 1 | -1): T | 
 }
 
 /**
+ * Phones show one lane at a time, side by side in a horizontal scroller: the lane whose left edge (`starts`, px)
+ * is nearest to the scroll position `pos`. -1 for no lanes.
+ */
+export function nearestIndex(starts: readonly number[], pos: number): number {
+  let best = -1;
+  for (let i = 0; i < starts.length; i++) {
+    if (best < 0 || Math.abs(starts[i] - pos) < Math.abs(starts[best] - pos)) best = i;
+  }
+  return best;
+}
+
+/**
  * Flex shares (percent, adding up to 100) for the children of a split, given their current sizes in px, so
  * that child `index` gets `target` px and the others share the rest in their current proportions. No child
  * gets less than `min` px where the total allows it.

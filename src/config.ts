@@ -121,7 +121,7 @@ export function loadSettings(saved: unknown): Settings {
 }
 
 /**
- * Settings saved by 0.1.x, renamed for 0.2: `layout` (the locked layout) is now `defaultLayout`, the layout every
+ * Settings saved by the one-lane-per-tab version, renamed: `layout` (the locked layout) is now `defaultLayout`, the layout every
  * lanes tab starts with. The old `layout` and `maxLanes` (gone: a tab's lanes are its layout) are then dropped by
  * loadSettings with the other unknown keys. `lockLayout` keeps its key; what it locks changed (see the settings tab).
  */

@@ -3,7 +3,7 @@ import type { Lane } from "./lane";
 
 /** A lanes tab: one Obsidian tab holding every lane of its layout. */
 export const VIEW_TYPE = "editor-lanes";
-/** 0.1's view: one lane per tab. Leaves of this type are closed on load (see EditorLanesPlugin.closeLegacy). */
+/** The old view: one lane per tab. Leaves of this type are closed on load (see EditorLanesPlugin.closeLegacy). */
 export const LEGACY_VIEW_TYPE = "editor-lane";
 export const SWALLOW_MS = 700; // after a shift-mousedown we handled, ignore the matching mouseup/click
 export const INTENT_MS = 2000; // an open is matched to the getLeaf call that picked its leaf within this time

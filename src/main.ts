@@ -1,8 +1,10 @@
 import {
+  MarkdownView,
   Menu,
   Notice,
   OpenViewState,
   PaneType,
+  Platform,
   Plugin,
   TAbstractFile,
   TFile,
@@ -14,6 +16,7 @@ import {
   debounce,
   getLinkpath,
 } from "obsidian";
+import { EditorView } from "@codemirror/view";
 import { around } from "monkey-around";
 import { DEFAULTS, Settings, loadSettings } from "./config";
 import { asEl } from "./dom";
@@ -23,6 +26,8 @@ import { LanesView, LegacyLaneView } from "./lanes-view";
 import { wrapStep } from "./layout";
 import { NotePicker } from "./note-picker";
 import { LanesSettingTab, Refresh } from "./settings";
+import { pickTabName } from "./tab-names";
+import { savedTabName } from "./tab-state";
 import { insertIndex } from "./tidy";
 import { AddOpts, INTENT_MS, Intent, Item, LEGACY_VIEW_TYPE, SWALLOW_MS, VIEW_TYPE, Where } from "./types";
 
@@ -48,6 +53,14 @@ const loose = (o: object) => o as unknown as Record<string, AnyFn>;
  * whole tab back with its notes) work as usual. "Split right / down" or "Open in new window" on a lanes tab (or a
  * card in one) gives an empty lanes tab with the same layout and lane sizes, no notes (emptyCopyOf). Other views
  * (canvas, PDF, graph, Bases…) open as ordinary tabs next to lanes tabs.
+ *
+ * Tab names: every lanes tab is titled "Editor lane <name>", <name> a random short fictional name from
+ * tab-names.ts (Shakespeare, myth, fairy tales, classic novels; all public domain) that no other lanes tab in
+ * any window has (loaded tabs are asked directly, tabs not loaded yet through their saved state); with all of
+ * them taken, " II", " III"… is appended. The name is saved in the tab's view state, so restarts, Workspaces
+ * and "Undo close tab" keep it; numbered tabs saved before names and the empty copies from Split / new window get a new one.
+ * "Rename lanes tab…" (⋯ menu, tab-header menu, mobile tab switcher, command; tab-name-modal.ts) sets a custom
+ * name or a new random one.
  *
  * Lock layout (setting): inside lanes tabs, no ad-hoc structural changes: no add / remove-lane buttons or menu
  * items, no draggable dividers (a tab shows its layout's exact widths). Layouts then change only through the
@@ -82,7 +95,36 @@ const loose = (o: object) => o as unknown as Record<string, AnyFn>;
  * moves the card into a new window's lanes tab, and rightSplit.collapse doesn't steal focus from an active card.
  * Checked against Obsidian 1.15.0's app.js and app.css.
  *
- * 0.1 layouts (one "editor-lane" leaf per lane) aren't converted: their leaves are closed on load, and a window
+ * Mobile (phones and tablets; manifest isDesktopOnly false). Obsidian mobile runs the same app.js: rightSplit
+ * is a MobileDrawer (`mobile-drawer`, leaves as direct children) instead of a sidedock, but the card trick holds:
+ * isAttached / getRoot / iterateLeaves see the drawer like the sidebar, and collapsing the drawer drops an
+ * active leaf rooted there just like collapsing the sidebar (onCollapse), which the collapse wrapper covers.
+ * Mobile-only adaptations:
+ * - updateMobileVisibleTabGroup marks the active leaf's parents `mod-visible`, and on phones CSS hides every
+ *   main-area split / tab group without it. With a card active that chain is private split → drawer, so the
+ *   lanes tab's own tab group would vanish: the patch re-marks the card's lanes tab chain; the private split
+ *   carries mod-visible itself (it's outside the tree the method walks).
+ * - focusLeaf closes the drawers only for leaves rooted in rootSplit: for a card it closes them too, so a note
+ *   tapped in the file explorer drawer comes to the front.
+ * - revealLeaf on a card would open the right drawer (or expand the right sidebar): it reveals the card's
+ *   lanes tab instead.
+ * - No popout windows: "Move to new window" on a card and a "window" duplicate fall back to a new tab.
+ * - Phones (body.is-phone) show one lane at a time (lanes-view.ts): a horizontal scroll-snap row with a lane
+ *   switcher; whatever opens a note in a lane, or moves one there, switches to it; swiping makes the lane shown
+ *   the current one. Tablets keep the desktop layout. Phone-specific Obsidian CSS that reaches into hosted cards
+ *   (view top spacing, fade masks) is undone in styles.css.
+ * - Touch: long-press = contextmenu (Obsidian synthesises it on iOS, Android fires it), so card and lane menus
+ *   work; a long-press on a card header starts Obsidian's touch drag (drop on a lane to move the card) and, if
+ *   released without moving, opens the card menu (Move up / down / to next / previous lane, Rename note, Pin…).
+ *   Shift-click has no touch equivalent: "Open in editor lane" is in the file menu, which Obsidian also shows
+ *   for a long-pressed link (link-context-menu). Card titles are only editable after "Rename note". Dividers
+ *   take pointer drags (data-ignore-swipe keeps the drawers from opening). Bigger hit areas in styles.css.
+ * - Keyboard: an editor extension adds the card header's height to CodeMirror's scroll margins (the sticky
+ *   header never covers the caret line; desktop too), and when the soft keyboard opens the caret of the
+ *   focused card is scrolled into view.
+ * No Node or Electron APIs are used; activeWindow (defined on mobile too) is the only window global.
+ *
+ * Old layouts (one "editor-lane" leaf per lane) aren't converted: their leaves are closed on load, and a window
  * left without a lanes tab gets a new one with the default layout in place of its first old lane (closeLegacy).
  */
 
@@ -121,7 +163,7 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   override async onload() {
-    // loadSettings: 0.1 keys migrated, then laid over the defaults, dropping values of the wrong type or range
+    // loadSettings: old keys migrated, then laid over the defaults, dropping values of the wrong type or range
     this.settings = loadSettings(await this.loadData());
     this.isException = compileExceptions(this.settings.routeExceptions);
     this.addSettingTab(new LanesSettingTab(this.app, this));
@@ -133,6 +175,10 @@ export default class EditorLanesPlugin extends Plugin {
     this.patchCreateLeafBySplit();
     this.patchDuplicateLeaf();
     this.patchMoveToPopout();
+    this.patchRevealLeaf();
+    this.patchMobileVisibility();
+    this.patchMobileFocus();
+    this.setupCaretVisibility();
 
     this.addRibbonIcon("columns-3", "New lanes tab", () => void this.newLanesTab());
     this.addCommand({ id: "new-lane", name: "New lanes tab", callback: () => void this.newLanesTab() });
@@ -143,6 +189,16 @@ export default class EditorLanesPlugin extends Plugin {
         const tab = this.currentTab();
         if (!tab) return false;
         if (!checking) tab.openLayoutDialog();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "rename-tab",
+      name: "Rename lanes tab…",
+      checkCallback: checking => {
+        const tab = this.currentTab();
+        if (!tab) return false;
+        if (!checking) tab.openRenameDialog();
         return true;
       },
     });
@@ -205,7 +261,8 @@ export default class EditorLanesPlugin extends Plugin {
       },
     });
 
-    // right-click on a file (explorer, tab, link, search result…)
+    // right-click on a file (explorer, tab, link, search result…); on mobile a long-press, including on a link
+    // in a note (Obsidian's link-context-menu triggers file-menu): the touch way to do what Shift-click does
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
         if (!(file instanceof TFile) || file.extension !== "md") return;
@@ -249,12 +306,15 @@ export default class EditorLanesPlugin extends Plugin {
       this.app.workspace.on("active-leaf-change", leaf => {
         const tab = this.tabOf(leaf);
         if (tab) this.touchTab(tab);
+        // phones: a card that becomes active (a command, a jump) is scrolled into view with its lane
+        const host = leaf ? this.hostedLeaves.get(leaf) : undefined;
+        if (host) host.lane.tab.showLane(host.lane);
       }),
     );
 
     // Lanes only: tabs that appear without going through openFile (restored layout, Workspaces load, Ctrl+T)
     // are swept into lanes tabs: all of them on startup and when the setting is turned on, afterwards only tabs
-    // that are new since the last sweep. Old (0.1) lane leaves are closed whenever a layout brings them in.
+    // that are new since the last sweep. Old one-lane-per-tab leaves are closed whenever a layout brings them in.
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.wrapRightSplitCollapse();
@@ -322,6 +382,15 @@ export default class EditorLanesPlugin extends Plugin {
     this.windowDocs.add(doc);
     // Shift-click a link: capture phase, so we act before Obsidian or CodeMirror (which would extend the selection)
     this.registerDomEvent(doc, "mousedown", e => this.onMouseDown(e), { capture: true });
+    // touch: a tap's emulated mousedown can be skipped (a scroll, a long-press), pointerdown always comes
+    this.registerDomEvent(
+      doc,
+      "pointerdown",
+      e => {
+        this.lastInput = e.target as Node | null;
+      },
+      { capture: true },
+    );
     this.registerDomEvent(
       doc,
       "keydown",
@@ -419,7 +488,7 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   /**
-   * 0.1 layouts (one "editor-lane" leaf per lane, in any window) aren't converted: their leaves are closed
+   * Old layouts (one "editor-lane" leaf per lane, in any window) aren't converted: their leaves are closed
    * without "Undo close tab" entries, and a window left without a lanes tab gets one with the default layout in
    * place of its first old lane. getLeavesOfType also finds old lanes in background tabs (deferred views
    * report their saved type).
@@ -455,8 +524,8 @@ export default class EditorLanesPlugin extends Plugin {
     }
     new Notice(
       replaced
-        ? "Editor Lanes 0.2 keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened."
-        : "Editor Lanes 0.2 keeps all lanes in one tab: the old lanes were closed.",
+        ? "Editor Lanes now keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened."
+        : "Editor Lanes now keeps all lanes in one tab: the old lanes were closed.",
     );
   }
 
@@ -635,8 +704,122 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   /**
+   * revealLeaf(card) would see the card's root (the right sidebar / mobile drawer) and expand it. Reveal the
+   * card's lanes tab instead, with the card scrolled into view (and its lane, on phones).
+   */
+  private patchRevealLeaf() {
+    const plugin = this;
+    this.register(
+      around(loose(this.app.workspace), {
+        revealLeaf: next =>
+          async function (this: unknown, leaf: WorkspaceLeaf, ...rest: unknown[]) {
+            const host = leaf ? plugin.hostedLeaves.get(leaf) : undefined;
+            if (!host) return next.call(this, leaf, ...rest);
+            await next.call(this, host.lane.tab.leaf, ...rest);
+            host.lane.tab.showLane(host.lane);
+            host.lane.scrollToItem(host.item);
+          },
+      }),
+    );
+  }
+
+  /**
+   * Mobile: workspace.updateMobileVisibleTabGroup marks the active leaf's parents `mod-visible` and takes the
+   * class off every other split / tab group in the main area; on phones those are hidden. A card's parents are
+   * its private split and the right drawer, so the lanes tab's own tab group (and splits) would be hidden: mark
+   * the lanes tab's chain instead, right after. A no-op on the desktop (the method returns at once there).
+   */
+  private patchMobileVisibility() {
+    const ws = this.app.workspace;
+    if (typeof ws.updateMobileVisibleTabGroup !== "function") return;
+    const plugin = this;
+    this.register(
+      around(ws, {
+        updateMobileVisibleTabGroup: (next: AnyFn) =>
+          function (this: unknown, ...args: unknown[]) {
+            const out = next.apply(this, args);
+            const tab = plugin.hostedLeaves.get(ws.activeLeaf as WorkspaceLeaf)?.lane.tab;
+            if (Platform.isMobile && tab) {
+              for (let p: WorkspaceItem | null = tab.leaf.parent; p; p = (p as WorkspaceItem).parent) {
+                (p as WorkspaceItem & { containerEl?: HTMLElement }).containerEl?.addClass("mod-visible");
+              }
+            }
+            return out;
+          },
+      }),
+    );
+  }
+
+  /**
+   * Mobile: focusing a leaf in the main area closes the sidebar drawers (workspace.focusLeaf, for leaves whose
+   * root is rootSplit), so a note tapped in the file explorer drawer shows up in front. A card's root is the
+   * right drawer, so do the same for cards. collapse() leaves a pinned drawer (tablets) open, as Obsidian does.
+   */
+  private patchMobileFocus() {
+    const ws = this.app.workspace;
+    if (typeof ws.focusLeaf !== "function") return;
+    const plugin = this;
+    this.register(
+      around(ws, {
+        focusLeaf: (next: AnyFn) =>
+          function (this: unknown, leaf: WorkspaceLeaf, ...rest: unknown[]) {
+            const out = next.call(this, leaf, ...rest);
+            if (Platform.isMobile && leaf && plugin.hostedLeaves.has(leaf)) {
+              for (const d of [ws.leftSplit, ws.rightSplit] as unknown as ({
+                type?: string;
+                collapse?(): void;
+              } | null)[]) {
+                if (d?.type === "mobile-drawer") d.collapse?.();
+              }
+            }
+            return out;
+          },
+      }),
+    );
+  }
+
+  /**
+   * Cards have a sticky header over their editor: CodeMirror's scroll margins get its height, so scrolling the
+   * caret into view (typing, arrow keys, search) never leaves it under the header. Mobile: when the soft
+   * keyboard opens (Obsidian's `keyboardWillShow`) or a card's editor gets focus, the caret is scrolled into
+   * view once the keyboard has settled (the lane got shorter).
+   */
+  private setupCaretVisibility() {
+    this.registerEditorExtension(
+      EditorView.scrollMargins.of(view => {
+        const card = view.dom.closest(".lane-item");
+        const head = card?.querySelector<HTMLElement>(":scope > .lane-item-header");
+        return head ? { top: head.offsetHeight + 4 } : null;
+      }),
+    );
+    if (!Platform.isMobile) return;
+    let timer = 0;
+    const soon = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => this.keepCaretVisible(), 350);
+    };
+    window.addEventListener("keyboardWillShow", soon);
+    this.register(() => {
+      window.removeEventListener("keyboardWillShow", soon);
+      window.clearTimeout(timer);
+    });
+    this.registerDomEvent(document, "focusin", e => {
+      if (asEl(e.target)?.closest(".lane-item-body")) soon();
+    });
+  }
+
+  private keepCaretVisible() {
+    const host = this.hostedLeaves.get(this.app.workspace.activeLeaf as WorkspaceLeaf);
+    const view = host?.item.leaf?.view;
+    if (!(view instanceof MarkdownView) || !view.editor.hasFocus()) return;
+    const at = view.editor.getCursor();
+    view.editor.scrollIntoView({ from: at, to: at }, false);
+  }
+
+  /**
    * Collapsing the right sidebar makes Obsidian move focus off any active leaf whose root is the sidebar,
    * which hosted leaves report. `setLayout` replaces rightSplit, so this is re-applied on layout changes.
+   * Mobile: the right drawer's collapse() does the same (MobileDrawer.onCollapse, called synchronously).
    */
   private wrapRightSplitCollapse() {
     const ws = this.app.workspace;
@@ -772,6 +955,35 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   // ---------- lanes tabs ----------
+
+  /**
+   * The names of every lanes tab but `self`, in any window, including tabs not loaded yet (their saved state is
+   * read; loaded tabs are asked directly, so naming one never asks another for its state, which could name it
+   * in turn). Tabs not named yet give null.
+   */
+  private otherTabNames(self: LanesView): (string | null)[] {
+    const names: (string | null)[] = [];
+    this.app.workspace.iterateAllLeaves(leaf => {
+      if (leaf === self.leaf) return;
+      if (leaf.view instanceof LanesView) names.push(leaf.view.peekName);
+      else {
+        const vs = leaf.getViewState(); // a deferred (not yet loaded) tab reports its saved state
+        if (vs.type === VIEW_TYPE) names.push(savedTabName(vs.state));
+      }
+    });
+    return names;
+  }
+
+  /** A random name for lanes tab `self` that no other lanes tab has (nor any of `avoid`). */
+  pickTabName(self: LanesView, avoid: string[] = []): string {
+    return pickTabName([...this.otherTabNames(self), ...avoid]);
+  }
+
+  /** Another lanes tab than `self` already has this name (ignoring case). */
+  tabNameInUse(name: string, self: LanesView): boolean {
+    const n = name.toLowerCase();
+    return this.otherTabNames(self).some(o => o?.toLowerCase() === n);
+  }
 
   /** Every open (loaded) lanes tab. */
   allTabs(): LanesView[] {
@@ -981,7 +1193,9 @@ export default class EditorLanesPlugin extends Plugin {
     // duplicateLeaf(leaf, "vertical" | "horizontal") means a split in that direction (see app.js)
     const split = mode === "split" || mode === "vertical" || mode === "horizontal";
     const d = mode === "horizontal" || dir === "horizontal" ? "horizontal" : "vertical";
-    const leaf = split ? ws.createLeafBySplit(src.leaf, d) : ws.getLeaf((mode ?? "tab") as PaneType);
+    // no popout windows on mobile (Obsidian's openPopout throws there): a new tab instead
+    const pane = mode === "window" && !this.canPopout() ? "tab" : mode;
+    const leaf = split ? ws.createLeafBySplit(src.leaf, d) : ws.getLeaf((pane ?? "tab") as PaneType);
     const { layout, sizes } = src.getState();
     await leaf.setViewState({ type: VIEW_TYPE, active: true, state: { layout, sizes, lanes: [] } });
     if (leaf.view instanceof LanesView) this.touchTab(leaf.view);
@@ -990,8 +1204,14 @@ export default class EditorLanesPlugin extends Plugin {
 
   /** "Move to new window" on a card: it moves into the first lane of a new window's lanes tab, pin and all. */
   async cardToNewWindow(lane: Lane, it: Item) {
-    const tab = await this.newTab(this.app.workspace.openPopoutLeaf());
+    // mobile has no popout windows: a new lanes tab instead
+    const tab = await this.newTab(this.canPopout() ? this.app.workspace.openPopoutLeaf() : this.createTabIn());
     if (tab?.lanes[0]) await this.moveItem(lane, it, tab.lanes[0], 0);
+  }
+
+  /** Popout windows exist: Obsidian for desktop, not emulating mobile (Platform.canPopoutWindow in app.js). */
+  private canPopout(): boolean {
+    return Platform.isDesktopApp && !Platform.isMobile;
   }
 
   endItemDrag() {

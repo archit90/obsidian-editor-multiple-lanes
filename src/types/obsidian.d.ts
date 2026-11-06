@@ -6,6 +6,21 @@ declare module "obsidian" {
   interface App {
     /** Tracks the current drag: `draggable` is what Obsidian's own drop targets read. */
     dragManager?: DragManager;
+    /** Mobile only (null on the desktop): the full-screen tab switcher; `isVisible` while it's open. */
+    mobileTabSwitcher?: { isVisible: boolean } | null;
+  }
+
+  interface View {
+    /**
+     * Fills a tab header's menu (right-click on a tab; long-press in the mobile tab switcher). Obsidian then
+     * calls onPaneMenu(menu, "tab-header"), except for a tab that isn't shown and in the mobile tab switcher.
+     */
+    onTabMenu(menu: Menu): void;
+  }
+
+  interface ItemView {
+    /** The view header's title, set from getDisplayText() when the view loads. */
+    titleEl?: HTMLElement;
   }
 
   interface DragManager {
@@ -38,6 +53,17 @@ declare module "obsidian" {
      * tab itself when it's an empty one.
      */
     createLeafInTabGroup(parent?: WorkspaceTabs): WorkspaceLeaf;
+    /**
+     * Mobile only (returns at once on the desktop): marks the active leaf's chain of parents `mod-visible` and
+     * takes it off every other split / tab group under rootSplit. On phones, CSS hides main-area splits and tab
+     * groups without it. Called by setActiveLeaf and on every layout update.
+     */
+    updateMobileVisibleTabGroup(): void;
+    /**
+     * Focuses the leaf's window and editor; on mobile also collapses the left / right drawers, but only for a
+     * leaf whose root is rootSplit. Called by setActiveLeaf(leaf, { focus: true }).
+     */
+    focusLeaf(leaf: WorkspaceLeaf): void;
   }
 
   interface WorkspaceLeaf {
@@ -46,5 +72,7 @@ declare module "obsidian" {
     history?: { serialize?(): unknown; deserialize?(state: unknown): void };
     /** Re-reads the view's icon and display text into the tab header. */
     updateHeader?(): void;
+    /** Whether the leaf's element is shown (its tab is the selected one, its window open). */
+    isVisible(): boolean;
   }
 }

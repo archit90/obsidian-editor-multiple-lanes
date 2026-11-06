@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitLanes, readTabState } from "./tab-state";
+import { fitLanes, readTabState, savedTabName } from "./tab-state";
 
 const d = (path: string, extra = {}) => ({ path, collapsed: false, ...extra });
 
@@ -15,7 +15,7 @@ describe("readTabState", () => {
     expect(s.lanes).toEqual([[{ path: "a.md", collapsed: false, pinned: true, openedAt: 5 }], [], [d("b.md")]]);
   });
   it("tolerates nothing saved and bad values", () => {
-    expect(readTabState(undefined)).toEqual({ layout: null, sizes: null, lanes: [] });
+    expect(readTabState(undefined)).toEqual({ name: null, layout: null, sizes: null, lanes: [] });
     const s = readTabState({ layout: "abc", sizes: { cols: [1] }, lanes: [[{ nope: 1 }, d("x.md")], "junk"] });
     expect(s.layout).toBeNull();
     expect(s.sizes).toBeNull();
@@ -37,5 +37,25 @@ describe("fitLanes", () => {
   it("keeps a note once per lane, pinned if either copy was", () => {
     const out = fitLanes([[d("a")], [d("a", { pinned: true })]], 1);
     expect(out).toEqual([[{ path: "a", collapsed: false, pinned: true }]]);
+  });
+});
+
+describe("tab names", () => {
+  it("reads a saved name, tidied, ignoring invalid ones", () => {
+    expect(readTabState({ name: "Puck" }).name).toBe("Puck");
+    expect(readTabState({ name: "  My   tab " }).name).toBe("My tab");
+    expect(readTabState({}).name).toBeNull();
+    expect(readTabState({ name: "" }).name).toBeNull();
+    expect(readTabState({ name: 7 }).name).toBeNull();
+    expect(readTabState({ name: "z".repeat(41) }).name).toBeNull();
+  });
+  it("gives a 0.2 numbered tab no name (it gets a new one)", () => {
+    expect(readTabState({ num: 3, lanes: [] }).name).toBeNull();
+  });
+  it("reads the name from a deferred tab's raw state", () => {
+    expect(savedTabName({ name: "Nemo", lanes: [] })).toBe("Nemo");
+    expect(savedTabName({ num: 2 })).toBeNull();
+    expect(savedTabName(undefined)).toBeNull();
+    expect(savedTabName("Nemo")).toBeNull();
   });
 });

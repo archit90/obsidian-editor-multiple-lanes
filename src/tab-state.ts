@@ -1,9 +1,15 @@
 // A lanes tab's view state (workspace.json, Workspaces, "Undo close tab"), read tolerantly. No DOM or app
 // access, so it can be unit-tested.
 import { Sizes, mergeTarget, parseLayout } from "./layout";
+import { readTabName } from "./tab-names";
 import type { ItemData } from "./types";
 
 export interface TabState {
+  /**
+   * The tab's name, shown in its title ("Editor lane <name>"), or null: not named yet (a new tab, or one saved
+   * before tabs had names: numbered tabs saved before names get a new name).
+   */
+  name: string | null;
   /** The tab's own layout ("Lane layout…"), or null: it follows the default from the settings. */
   layout: string | null;
   /** Divider positions dragged in this tab (unlocked), for the layout they were made for. */
@@ -40,7 +46,12 @@ export function readTabState(raw: unknown): TabState {
   const lanes = Array.isArray(o.lanes)
     ? o.lanes.map(l => (Array.isArray(l) ? l.map(readItem).filter((d): d is ItemData => !!d) : []))
     : [];
-  return { layout, sizes: readSizes(o.sizes), lanes };
+  return { name: readTabName(o.name), layout, sizes: readSizes(o.sizes), lanes };
+}
+
+/** The saved name in a lanes tab's raw view state (a tab not loaded yet), or null. */
+export function savedTabName(raw: unknown): string | null {
+  return raw && typeof raw === "object" ? readTabName((raw as Record<string, unknown>).name) : null;
 }
 
 /**

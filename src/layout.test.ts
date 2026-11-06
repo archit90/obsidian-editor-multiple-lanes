@@ -7,6 +7,7 @@ import {
   insertLane,
   laneCount,
   mergeTarget,
+  nearestIndex,
   PRESETS,
   parseLayout,
   planInsert,
@@ -204,5 +205,17 @@ describe("resizePair / effectiveShares", () => {
     expect(effectiveShares(c, sizes, true)).toEqual({ cols: [50, 50], rows: [[100], [50, 50]] });
     expect(effectiveShares(cols("40, 60x2"), sizes, false).cols).toEqual([40, 60]);
     expect(effectiveShares(c, null, false).rows).toEqual([[100], [50, 50]]);
+  });
+});
+
+describe("nearestIndex", () => {
+  it("picks the lane whose start is nearest the scroll position", () => {
+    expect(nearestIndex([0, 400, 800], 0)).toBe(0);
+    expect(nearestIndex([0, 400, 800], 590)).toBe(1);
+    expect(nearestIndex([0, 400, 800], 610)).toBe(2);
+    expect(nearestIndex([0, 400, 800], 5000)).toBe(2);
+  });
+  it("is -1 without lanes", () => {
+    expect(nearestIndex([], 10)).toBe(-1);
   });
 });

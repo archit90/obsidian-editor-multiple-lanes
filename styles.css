@@ -12,6 +12,7 @@
   min-height: 0;
   display: flex;
   flex-direction: row;
+  position: relative; /* the lanes' offset parent (phones scroll to a lane's offsetLeft) */
 }
 .lanes-col {
   flex-basis: 0;
@@ -116,6 +117,8 @@
   min-height: 0;
   overflow-y: auto;
   padding: 4px 6px 40vh;
+  /* the sticky card header must not cover what the browser scrolls into view (focus, find) */
+  scroll-padding-top: 48px;
 }
 .lane-empty {
   color: var(--text-muted, #888);
@@ -309,10 +312,10 @@
 }
 
 /* Lanes tab header: a lanes tab has no navigation history and the tab bar already shows its title, so hide the
-   back/forward buttons and the title. "Lane layout…" and the ⋯ menu stay. Hosted notes hide their header
-   separately (.lane-item-body .view-header). */
+   back/forward buttons and the title. "Lane layout…" and the ⋯ menu stay. Phones have no tab bar, so there the
+   title ("Editor lane <name>") stays. Hosted notes hide their header separately (.lane-item-body .view-header). */
 .workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-header-nav-buttons,
-.workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-header-title-container {
+body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-header-title-container {
   display: none !important;
 }
 .workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-actions {
@@ -463,4 +466,164 @@
   flex-wrap: wrap;
   gap: 6px;
   margin: 12px 0;
+}
+
+/* ---------- mobile (Obsidian sets body.is-mobile; is-phone below 600px width or height, else is-tablet) ---------- */
+
+/* Phone: one lane at a time. The lanes (in layout order: the columns are flattened) sit side by side, each as
+   wide as the tab, in a horizontal scroller that snaps to a lane; the lane switcher above shows which one. The
+   dividers have nothing to resize. Tablets keep the desktop layout. */
+.lanes-switcher {
+  display: none;
+}
+.is-phone .lanes-switcher:not(.lane-hidden) {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--background-modifier-border, #ddd);
+  background: var(--background-secondary, #f2f2f2);
+}
+.lanes-switcher::-webkit-scrollbar {
+  display: none;
+}
+.lanes-switch {
+  flex: none;
+  min-width: 40px;
+  height: 32px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: var(--radius-m, 6px);
+  font-size: var(--font-ui-small, 0.9em);
+  font-variant-numeric: tabular-nums;
+  box-shadow: none;
+  background: var(--background-primary, #fff);
+  color: var(--text-muted, #888);
+}
+.lanes-switch.is-active {
+  background: var(--interactive-accent, #7b6cd9);
+  color: var(--text-on-accent, #fff);
+}
+.lanes-switch-count {
+  font-size: 0.8em;
+  opacity: 0.75;
+}
+.is-phone .lanes-grid {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.is-phone .lanes-grid::-webkit-scrollbar {
+  display: none;
+}
+.is-phone .lanes-col {
+  display: contents;
+}
+.is-phone .lanes-divider {
+  display: none;
+}
+.is-phone .lane {
+  flex: 0 0 100% !important; /* beats the inline flex-grow of the layout's row shares */
+  width: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+.is-phone .lane + .lane {
+  border-left: 1px solid var(--background-modifier-border, #ddd);
+}
+
+/* Touch-sized hit areas (at least 40px), the pin and lane buttons always visible (no hover on touch), no text
+   selection or callout on a long-press of a card header (it opens the card menu or starts a drag). */
+.is-mobile .lane-header {
+  min-height: 40px;
+}
+.is-mobile .lane-action {
+  opacity: 1;
+  min-width: 36px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.is-mobile .lane-action svg,
+.is-mobile .lane-pin svg {
+  width: 18px;
+  height: 18px;
+}
+.is-mobile .lane-item-header,
+.is-mobile .lanes-view.lane-compact .lane-item-header {
+  min-height: 44px;
+  padding: 2px 4px 2px 6px;
+  gap: 2px;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.is-mobile .lane-chevron,
+.is-mobile .lane-pin,
+.is-mobile .lane-close {
+  min-width: 40px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.is-mobile .lane-pin {
+  opacity: 0.6;
+}
+.is-mobile .lane-item.is-pinned .lane-pin {
+  opacity: 1;
+}
+.is-mobile .lane-item-title:hover {
+  background: none; /* a tap leaves :hover stuck on touch screens */
+}
+.is-mobile .lane-item-title[contenteditable="false"] {
+  cursor: pointer;
+}
+.is-mobile .lane-item-title[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.is-mobile .lanes-divider.mod-col::after {
+  left: -12px;
+  right: -12px;
+}
+.is-mobile .lanes-divider.mod-row::after {
+  top: -12px;
+  bottom: -12px;
+}
+.is-mobile .lane-list {
+  scroll-padding-bottom: var(--autoscroll-padding, 20px);
+}
+
+/* Obsidian's phone CSS for main-area views also reaches the hosted cards (they sit inside .mod-root): top
+   spacing for its floating view header, a fade mask under it, and hiding any .workspace-split without
+   mod-visible (the private split carries it; this is a fallback). A card has neither header nor fade. */
+.lane-item-body .workspace-leaf-content {
+  --view-top-spacing: 0px;
+  --view-top-spacing-markdown: 0px;
+  --view-bottom-spacing: 0px;
+}
+.lane-item-body .view-content {
+  margin-top: 0 !important;
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+.is-phone .mod-root .lane-item-body .workspace-split.lane-split {
+  display: flex !important;
+}
+
+/* Settings and dialogs on a phone */
+.is-phone .lane-setting-textarea {
+  min-width: 0;
+}
+.is-phone .lane-layout-preview {
+  max-width: 100%;
 }

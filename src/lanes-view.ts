@@ -1,4 +1,4 @@
-import { ItemView, Menu, Notice, ViewStateResult, WorkspaceLeaf } from "obsidian";
+import { ItemView, Menu, Notice, Platform, ViewStateResult, WorkspaceLeaf, debounce } from "obsidian";
 import type EditorLanesPlugin from "./main";
 import { Lane } from "./lane";
 import { LayoutModal } from "./layout-modal";
@@ -11,6 +11,7 @@ import {
   formatLayout,
   insertLane,
   laneCount,
+  nearestIndex,
   parseLayout,
   planInsert,
   planRelayout,
@@ -20,6 +21,8 @@ import {
   shareWithTarget,
   slotOf,
 } from "./layout";
+import { TabNameModal } from "./tab-name-modal";
+import { TAB_TITLE_PREFIX } from "./tab-names";
 import { fitLanes, readTabState } from "./tab-state";
 import { LEGACY_VIEW_TYPE, VIEW_TYPE } from "./types";
 
@@ -39,6 +42,10 @@ const ADD_LANE: [Side, string, string][] = [
  * inside it, not leaves. With the layout unlocked, dividers between columns and rows can be dragged (sizes saved
  * in the view state too) and each lane header has buttons to add a lane beside it or remove it, which give the
  * tab its own layout.
+ *
+ * Phones (`body.is-phone`) show one lane at a time: the lanes sit side by side in a horizontal scroller that
+ * snaps to each lane (swipe between them), with a row of lane buttons above (the lane switcher). The layout,
+ * routing and saved state are the same as on a wide screen; tablets show the layout as on the desktop.
  */
 export class LanesView extends ItemView {
   /** In layout order: columns left to right, top to bottom within a column. */
@@ -47,9 +54,18 @@ export class LanesView extends ItemView {
   lastLane: Lane | null = null;
   /** The tab's own layout, or null: it follows the default in the settings. */
   private override: string | null = null;
+  private nameValue: string | null = null;
+  /** The saved name, without picking one (for naming other tabs). */
+  get peekName(): string | null {
+    return this.nameValue;
+  }
   private sizes: Sizes | null = null;
   private columns: LayoutColumn[] = ONE_LANE;
   private gridEl!: HTMLElement;
+  /** Phones: one button per lane, above the lanes. Hidden by CSS on wider screens. */
+  private switcherEl!: HTMLElement;
+  /** Phones: the lane scrolled into view. */
+  private shownLane: Lane | null = null;
   private colEls: HTMLElement[] = [];
   /** What the grid was last drawn for (layout, lock, sizes), so settings changes only redraw when needed. */
   private drawn = "";
@@ -66,13 +82,29 @@ export class LanesView extends ItemView {
   getViewType() {
     return VIEW_TYPE;
   }
+  /**
+   * "Editor lane <name>": every lanes tab gets a random fictional name no other lanes tab has when it's first
+   * shown or saved, and keeps it (saved in its state); "Rename lanes tab…" changes it.
+   */
   getDisplayText() {
-    // the note opened last in this tab, so several lanes tabs can be told apart
-    let best: { name: string; at: number } | null = null;
-    for (const l of this.lanes) {
-      for (const it of l.items) if (!best || it.openedAt > best.at) best = { name: it.file.basename, at: it.openedAt };
-    }
-    return best ? `Lanes: ${best.name}` : "Editor lanes";
+    return `${TAB_TITLE_PREFIX}${this.tabName()}`;
+  }
+
+  /** This tab's name, picked on first use. */
+  tabName(): string {
+    if (this.nameValue === null) this.nameValue = this.plugin.pickTabName(this);
+    return this.nameValue;
+  }
+
+  /** "Rename lanes tab…": a new name (already validated and tidied). */
+  rename(name: string) {
+    this.nameValue = name;
+    this.titleEl?.setText(this.getDisplayText()); // the view header's title (shown on phones)
+    this.save(); // also updates the tab header
+  }
+
+  openRenameDialog() {
+    new TabNameModal(this.app, this.plugin, this).open();
   }
   override getIcon() {
     return "columns-3";
@@ -82,7 +114,11 @@ export class LanesView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("lanes-view");
+    this.switcherEl = root.createDiv({ cls: "lanes-switcher", attr: { role: "tablist", "aria-label": "Lanes" } });
     this.gridEl = root.createDiv({ cls: "lanes-grid" });
+    // phones: the lane swiped to becomes the current one (where opens from outside the tab go)
+    const settle = debounce(() => this.onSwiped(), 120, true);
+    this.registerDomEvent(this.gridEl, "scroll", () => settle());
     this.addAction("layout-grid", "Lane layout…", () => this.openLayoutDialog());
     this.registerEvent(this.app.vault.on("delete", f => this.lanes.forEach(l => l.onFileDeleted(f))));
     this.registerEvent(this.app.vault.on("rename", f => this.lanes.forEach(l => l.onFileRenamed(f))));
@@ -104,12 +140,77 @@ export class LanesView extends ItemView {
 
   override onResize() {
     for (const l of this.lanes) l.checkWindow(); // a tab moved to another window
+    // phones: keep the shown lane in place (rotation, the keyboard, a window that became phone-sized)
+    if (this.isPhone()) this.showLane(this.shownLane ?? this.currentLane(), false);
+  }
+
+  // ---------- phones: one lane at a time ----------
+
+  /** Phone-sized screen: the lanes are a horizontal scroller (see styles.css). Follows Obsidian's body class. */
+  isPhone(): boolean {
+    return !!this.contentEl?.doc.body.hasClass("is-phone");
+  }
+
+  /** Phones: scroll `lane` into view (a note opened or moved there, a lane button). Elsewhere nothing to do. */
+  showLane(lane: Lane | null, smooth = true) {
+    if (!lane || !this.gridEl || !this.isPhone() || !this.lanes.includes(lane)) return;
+    this.shownLane = lane;
+    this.updateSwitcher();
+    const left = lane.el.offsetLeft; // .lanes-grid is the offset parent
+    if (Math.abs(this.gridEl.scrollLeft - left) > 1) {
+      this.gridEl.scrollTo({ left, behavior: smooth ? "smooth" : "auto" });
+    }
+  }
+
+  /** Phones: the lane a swipe (or a scroll) settled on. */
+  private onSwiped() {
+    if (!this.isPhone() || !this.lanes.length) return;
+    const i = nearestIndex(
+      this.lanes.map(l => l.el.offsetLeft),
+      this.gridEl.scrollLeft,
+    );
+    const lane = this.lanes[i];
+    if (!lane || lane === this.shownLane) return;
+    this.shownLane = lane;
+    this.updateSwitcher();
+    this.plugin.lastLane = lane;
+  }
+
+  /** The lane buttons (phones): "1", "2"… with the note count; the shown lane is selected. */
+  private updateSwitcher() {
+    const el = this.switcherEl;
+    if (!el) return;
+    el.empty();
+    if (this.lanes.length < 2) {
+      el.addClass("lane-hidden");
+      return;
+    }
+    el.removeClass("lane-hidden");
+    const shown = this.shownLane && this.lanes.includes(this.shownLane) ? this.shownLane : this.lanes[0];
+    this.lanes.forEach((lane, i) => {
+      const n = lane.items.length;
+      const b = el.createEl("button", {
+        cls: "lanes-switch",
+        attr: {
+          role: "tab",
+          "aria-selected": String(lane === shown),
+          "aria-label": `Lane ${i + 1}, ${n} note${n === 1 ? "" : "s"}`,
+        },
+      });
+      b.createSpan({ cls: "lanes-switch-num", text: String(i + 1) });
+      if (n) b.createSpan({ cls: "lanes-switch-count", text: String(n) });
+      b.toggleClass("is-active", lane === shown);
+      b.addEventListener("click", () => {
+        this.plugin.lastLane = lane;
+        this.showLane(lane);
+      });
+    });
   }
 
   // ---------- state (workspace.json, Workspaces, "Undo close tab") ----------
 
   override getState(): Record<string, unknown> {
-    const s: Record<string, unknown> = { lanes: this.lanes.map(l => l.getState()) };
+    const s: Record<string, unknown> = { name: this.tabName(), lanes: this.lanes.map(l => l.getState()) };
     if (this.override !== null) s.layout = this.override;
     if (this.sizes) s.sizes = this.sizes;
     return s;
@@ -117,6 +218,7 @@ export class LanesView extends ItemView {
 
   override async setState(state: unknown, result: ViewStateResult) {
     const st = readTabState(state);
+    if (st.name !== null) this.nameValue = st.name; // a numbered tab saved before names gets a new one
     this.override = st.layout;
     this.sizes = st.sizes;
     this.build(st.lanes);
@@ -187,13 +289,19 @@ export class LanesView extends ItemView {
       }
     });
     this.lanes.forEach(l => this.drawHeader(l));
+    if (this.shownLane && !this.lanes.includes(this.shownLane)) this.shownLane = null;
+    this.updateSwitcher();
+    // phones: the redrawn grid starts scrolled to the left; go back to the lane shown before
+    if (this.isPhone() && this.shownLane) this.showLane(this.shownLane, false);
   }
 
   /** A divider between two columns (`kind` "col") or two lanes stacked in column `ci` ("row"). Draggable unless locked. */
   private divider(parent: HTMLElement, kind: "col" | "row", ci: number, i: number) {
     const el = parent.createDiv({ cls: `lanes-divider mod-${kind}` });
     if (this.locked) return;
-    el.setAttr("aria-label", "Drag to resize; double-click to reset");
+    // touch: a drag here must not open Obsidian's mobile sidebars (their swipe skips this attribute)
+    el.setAttr("data-ignore-swipe", "true");
+    el.setAttr("aria-label", Platform.isMobile ? "Drag to resize" : "Drag to resize; double-click to reset");
     el.addEventListener("dblclick", () => this.resetSizes());
     el.addEventListener("pointerdown", (e: PointerEvent) => {
       if (e.button !== 0) return;
@@ -259,7 +367,9 @@ export class LanesView extends ItemView {
 
   /** A lane's notes changed (count shown in its header). */
   laneChanged(lane: Lane) {
-    if (this.lanes.includes(lane)) this.drawHeader(lane);
+    if (!this.lanes.includes(lane)) return;
+    this.drawHeader(lane);
+    this.updateSwitcher();
   }
 
   /** Change the layout and move lanes / notes as `plan` says (or by order). Runs one at a time. */
@@ -389,6 +499,27 @@ export class LanesView extends ItemView {
   /** The tab's ⋯ menu and its tab header's right-click menu (Obsidian's items, such as Split, come first). */
   override onPaneMenu(menu: Menu, source: string) {
     super.onPaneMenu(menu, source);
+    this.addTabItems(menu);
+  }
+
+  /**
+   * The tab-header menu: Obsidian builds it from onTabMenu and then onPaneMenu(menu, "tab-header"), except for a
+   * tab that isn't shown and in the mobile tab switcher (a long-press on a tab), where only onTabMenu runs.
+   */
+  override onTabMenu(menu: Menu) {
+    super.onTabMenu(menu);
+    const switcher = Platform.isMobile && !!this.app.mobileTabSwitcher?.isVisible;
+    if (switcher || !this.leaf.isVisible()) this.addTabItems(menu);
+  }
+
+  private addTabItems(menu: Menu) {
+    menu.addItem(i =>
+      i
+        .setSection("pane")
+        .setTitle("Rename lanes tab…")
+        .setIcon("pencil")
+        .onClick(() => this.openRenameDialog()),
+    );
     menu.addItem(i =>
       i
         .setSection("pane")
@@ -464,7 +595,7 @@ export class LanesView extends ItemView {
 }
 
 /**
- * 0.1's one-lane view, registered only so old layouts load without "plugin not active" placeholders: such a
+ * The old one-lane-per-tab view, registered only so old layouts load without "plugin not active" placeholders: such a
  * leaf is closed as soon as it opens (and on layout ready); see EditorLanesPlugin.closeLegacy.
  */
 export class LegacyLaneView extends ItemView {
@@ -482,7 +613,7 @@ export class LegacyLaneView extends ItemView {
     return "Old editor lane";
   }
   override async onOpen() {
-    this.contentEl.setText("Replaced by lanes tabs in Editor Lanes 0.2; this tab closes.");
+    this.contentEl.setText("Replaced by lanes tabs; this tab closes.");
     this.plugin.requestLegacyCleanup();
   }
 }

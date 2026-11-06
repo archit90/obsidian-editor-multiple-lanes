@@ -1,4 +1,15 @@
-import { App, Keymap, Menu, Notice, TFile, WorkspaceLeaf, WorkspaceSplit, getLinkpath, setIcon } from "obsidian";
+import {
+  App,
+  Keymap,
+  Menu,
+  Notice,
+  Platform,
+  TFile,
+  WorkspaceLeaf,
+  WorkspaceSplit,
+  getLinkpath,
+  setIcon,
+} from "obsidian";
 import type EditorLanesPlugin from "./main";
 import type { LanesView } from "./lanes-view";
 import { asEl } from "./dom";
@@ -35,18 +46,22 @@ export class Lane {
   ) {
     // made in the tab's own window (main or popout), like everything an IntersectionObserver watches
     const root = (this.el = tab.contentEl.createDiv({ cls: "lane" }));
-    root.addEventListener("mousedown", () => this.plugin.notePointerIn(this), { capture: true });
+    // pointerdown: mouse, pen and touch alike (a tap's emulated mousedown can be skipped)
+    root.addEventListener("pointerdown", () => this.plugin.notePointerIn(this), { capture: true });
     const headerEl = root.createDiv({ cls: "lane-header" });
     this.labelEl = headerEl.createSpan({ cls: "lane-label" });
     this.actionsEl = headerEl.createDiv({ cls: "lane-actions" });
     this.emptyEl = root.createDiv({
       cls: "lane-empty",
-      text: "Open a note, Shift-click a link, or drag a note or link here.",
+      text: Platform.isMobile
+        ? "Open a note, long-press a link → Open in editor lane, or drag a note here."
+        : "Open a note, Shift-click a link, or drag a note or link here.",
     });
     this.listEl = root.createDiv({ cls: "lane-list" });
     this.updateEmpty();
     this.setupDrop(root);
-    // Right-click on the lane's background (not a card): the lane's menu, as in its header's ⋯ button
+    // Right-click (touch: long-press) on the lane's background (not a card): the lane's menu, as in its
+    // header's ⋯ button. Obsidian turns a long-press into a contextmenu event on iOS; Android sends one itself.
     root.addEventListener("contextmenu", e => {
       if (asEl(e.target)?.closest(".lane-item")) return;
       e.preventDefault();
@@ -197,6 +212,7 @@ export class Lane {
     await this.setCollapsed(it, false);
     this.afterExpand(it);
     if (opts.index === undefined) this.scrollToItem(it);
+    if (opts.focus !== false) this.tab.showLane(this); // phones: switch to this lane
     const leaf: any = it.leaf;
     if (leaf) {
       if (opts.mode && leaf.getViewState().state?.mode !== opts.mode) {
@@ -225,9 +241,17 @@ export class Lane {
     // full path: the folder is a fixed prefix, only the name after it is editable
     const nameEl = header.createSpan({ cls: "lane-item-name" });
     const pathEl = nameEl.createSpan({ cls: "lane-item-path" });
+    // Desktop: the title is always editable (click to rename). Touch: a tap on it toggles the note like the
+    // rest of the header (a tap would otherwise bring up the keyboard); "Rename note" in the card's menu (a
+    // long-press on the header) makes it editable until it loses focus.
     const titleEl = nameEl.createSpan({
       cls: "lane-item-title",
-      attr: { contenteditable: "true", spellcheck: "false", role: "textbox", "aria-describedby": hintId },
+      attr: {
+        contenteditable: String(!Platform.isMobile),
+        spellcheck: "false",
+        role: "textbox",
+        "aria-describedby": hintId,
+      },
     });
     header.createSpan({ cls: "lane-sr-only", text: "Note name. Edit to rename the note.", attr: { id: hintId } });
     const pinEl = header.createEl("button", { cls: "lane-pin clickable-icon" });
@@ -288,7 +312,7 @@ export class Lane {
 
     // header click (or the chevron button, which also takes Enter / Space) toggles the note
     header.addEventListener("click", e => {
-      if ((e.target as HTMLElement).closest(".lane-item-title, .lane-close, .lane-pin")) return;
+      if ((e.target as HTMLElement).closest('.lane-item-title[contenteditable="true"], .lane-close, .lane-pin')) return;
       const expanding = it.collapsed;
       if (expanding) it.openedAt = stamp();
       void this.setCollapsed(it, !it.collapsed).then(() => {
@@ -338,15 +362,19 @@ export class Lane {
     titleEl.addEventListener("blur", () => {
       // the window losing focus also blurs: keep editing, commit on the next real blur or Enter
       if (!it.cancelEdit && !titleEl.doc.hasFocus()) return;
+      if (Platform.isMobile) titleEl.setAttr("contenteditable", "false");
       void this.renameFromTitle(it);
     });
     closeEl.addEventListener("click", e => {
       e.stopPropagation();
       this.close(it);
     });
+    // Right-click on the header; on touch a long-press: Obsidian's drag manager starts a drag of the header and,
+    // when it ends without moving, sends this contextmenu (see app.js DragManager.onDragEnd).
     header.addEventListener("contextmenu", e => {
       e.preventDefault();
       const menu = new Menu();
+      const at = this.items.indexOf(it);
       menu.addItem(i =>
         i
           .setTitle("Open in next lane")
@@ -362,8 +390,24 @@ export class Lane {
       menu.addItem(i =>
         i
           .setTitle("Move to top")
-          .setIcon("arrow-up")
+          .setIcon("arrow-up-to-line")
+          .setDisabled(at <= 0)
           .onClick(() => this.placeAt(it, 0)),
+      );
+      // touch has no reliable way to drag a card a short way: one place up or down (pinned notes stay on top)
+      menu.addItem(i =>
+        i
+          .setTitle("Move up")
+          .setIcon("arrow-up")
+          .setDisabled(at <= 0)
+          .onClick(() => this.placeAt(it, Math.max(0, this.items.indexOf(it) - 1))),
+      );
+      menu.addItem(i =>
+        i
+          .setTitle("Move down")
+          .setIcon("arrow-down")
+          .setDisabled(at < 0 || at >= this.items.length - 1)
+          .onClick(() => this.placeAt(it, this.items.indexOf(it) + 1)),
       );
       menu.addItem(i =>
         i
@@ -378,6 +422,12 @@ export class Lane {
           .onClick(() => void this.plugin.moveToLane(this, it, 1)),
       );
       menu.addSeparator();
+      menu.addItem(i =>
+        i
+          .setTitle("Rename note")
+          .setIcon("pencil")
+          .onClick(() => window.setTimeout(() => this.editTitle(it, "all"), 0)),
+      );
       menu.addItem(i =>
         i
           .setTitle(it.pinned ? "Unpin" : "Pin")
@@ -409,6 +459,7 @@ export class Lane {
   /** Focus the card title and select it, for `eState.rename` ("all" / "start" / "end"), e.g. a new note or F2. */
   private editTitle(it: Item, how: unknown) {
     const el = it.titleEl;
+    el.setAttr("contenteditable", "true"); // touch: editable until it loses focus
     el.focus();
     const sel = el.win.getSelection();
     if (!sel) return;
@@ -520,6 +571,7 @@ export class Lane {
       this.save();
     }
     this.scrollToItem(it);
+    this.tab.showLane(this);
     if (it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
     else it.titleEl.focus();
   }
@@ -568,7 +620,7 @@ export class Lane {
     it.pinEl.setAttr("aria-pressed", String(it.pinned));
   }
 
-  private scrollToItem(it: Item) {
+  scrollToItem(it: Item) {
     const top = it.el.getBoundingClientRect().top - this.listEl.getBoundingClientRect().top;
     this.listEl.scrollTop = Math.max(0, this.listEl.scrollTop + top - 12);
   }
@@ -614,6 +666,7 @@ export class Lane {
       this.afterExpand(it);
     }
     this.save();
+    if (focus) this.tab.showLane(this);
     if (focus && !it.collapsed && it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
   }
 
@@ -677,7 +730,9 @@ export class Lane {
         if (v === null) detached = true;
       },
     });
-    split.containerEl.addClass("lane-split");
+    // mod-visible: on phones Obsidian hides every .workspace-split inside the main area without it (the
+    // hosted split isn't in the layout tree, so updateMobileVisibleTabGroup never sets or clears it)
+    split.containerEl.addClass("lane-split", "mod-visible");
     let leaf: any;
     try {
       leaf = new (WorkspaceLeaf as any)(this.app);
