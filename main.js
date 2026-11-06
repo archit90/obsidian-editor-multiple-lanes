@@ -2481,6 +2481,8 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     this.requestLegacyCleanup = (0, import_obsidian8.debounce)(() => void this.closeLegacy().then(() => this.closeOldNavigator()), 100, true);
     this.noticeAt = 0;
     this.patchedProtos = /* @__PURE__ */ new WeakSet();
+    /** Per lanes tab: its card that was active last. */
+    this.lastCard = /* @__PURE__ */ new WeakMap();
   }
   /** The lane used last, in any tab (setting it also makes it its tab's last-used lane and that tab the most recent). */
   get lastLane() {
@@ -2616,6 +2618,7 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
       this.app.workspace.on("active-leaf-change", (leaf) => {
         const tab = this.tabOf(leaf);
         if (tab) this.touchTab(tab);
+        this.activeCardFor(leaf);
         const host = leaf ? this.hostedLeaves.get(leaf) : void 0;
         if (host) host.lane.tab.showLane(host.lane);
       })
@@ -3202,12 +3205,36 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
    */
   activeFollowsFocus(e) {
     const t = asEl(e.target);
-    if (!t?.closest(".lane-item-body")) return;
+    if (!t?.closest(".lane-item")) return;
     for (const [leaf, host] of this.hostedLeaves) {
       if (!host.item.el.contains(t)) continue;
       if (this.app.workspace.activeLeaf !== leaf) this.app.workspace.setActiveLeaf(leaf, { focus: false });
       return;
     }
+  }
+  /**
+   * A lanes tab that becomes the active leaf hands that on to its last active card (else its first open one), so
+   * workspace.activeEditor is a note whenever a lanes tab with an open note is in front: switching to the tab,
+   * a click on a lane header, startup with a lanes tab active. The lanes view itself has no editor, and
+   * Templater's "Insert template" then fails with "No active editor".
+   */
+  activeCardFor(leaf) {
+    if (!leaf) return;
+    const host = this.hostedLeaves.get(leaf);
+    if (host) {
+      this.lastCard.set(host.lane.tab, leaf);
+      return;
+    }
+    const view = leaf.view;
+    if (!(view instanceof LanesView)) return;
+    const hostedIn = (l) => !!l && this.hostedLeaves.get(l)?.lane.tab === view;
+    const last = this.lastCard.get(view);
+    const card = hostedIn(last) ? last : [...this.hostedLeaves.keys()].find((l) => hostedIn(l));
+    if (!card) return;
+    activeWindow.setTimeout(() => {
+      if (this.app.workspace.activeLeaf === leaf && this.hostedLeaves.has(card))
+        this.app.workspace.setActiveLeaf(card, { focus: false });
+    }, 0);
   }
   searchKeysFollowFocus(e) {
     const t = asEl(e.target);
