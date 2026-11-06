@@ -1,20 +1,30 @@
 import {
   Menu,
+  Notice,
   OpenViewState,
+  PaneType,
   Plugin,
   TAbstractFile,
   TFile,
+  WorkspaceContainer,
+  WorkspaceItem,
   WorkspaceLeaf,
-  WorkspaceSplit,
+  WorkspaceParent,
+  WorkspaceTabs,
   debounce,
   getLinkpath,
 } from "obsidian";
 import { around } from "monkey-around";
+import { DEFAULTS, Settings, loadSettings } from "./config";
 import { asEl } from "./dom";
-import { LaneView } from "./lane-view";
+import { Matcher, compileExceptions } from "./exceptions";
+import { Lane } from "./lane";
+import { LanesView, LegacyLaneView } from "./lanes-view";
+import { wrapStep } from "./layout";
 import { NotePicker } from "./note-picker";
-import { DEFAULTS, LanesSettingTab, Settings } from "./settings";
-import { AddOpts, INTENT_MS, Intent, Item, LaneDir, SWALLOW_MS, VIEW_TYPE, Where } from "./types";
+import { LanesSettingTab, Refresh } from "./settings";
+import { insertIndex } from "./tidy";
+import { AddOpts, INTENT_MS, Intent, Item, LEGACY_VIEW_TYPE, SWALLOW_MS, VIEW_TYPE, Where } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFn = (...args: any[]) => any;
@@ -22,37 +32,72 @@ type AnyFn = (...args: any[]) => any;
 const loose = (o: object) => o as unknown as Record<string, AnyFn>;
 
 /*
- * Editor Lanes: Logseq-style editor lanes. A lane is a column in the main area holding a scrollable stack of
- * notes, newest on top, each a real Obsidian editor (Live Preview / Source / Reading, hotkeys, [[ suggest…),
- * collapsible and closable. Lanes sit side by side.
+ * Editor Lanes: Logseq-style editor lanes. A lane is a column holding a scrollable stack of notes (newest on
+ * top by default), each a real Obsidian editor (Live Preview / Source / Reading, hotkeys, [[ suggest…), collapsible,
+ * pinnable and closable.
  *
- * "Lanes only" (setting, on by default): every note opened in the main area goes into a lane instead of a
- * tab. A link followed inside lane n opens in lane n+1 (created if needed), like sliding panes; a "new tab"
- * open (Ctrl/Cmd- or middle-click) gets a new lane; anything else (explorer, quick switcher, search…) goes
- * to the lane used last. Opens aimed at a popout window stay there, unless they come from a lane in it.
- *   Shift-click a link: add to the lane used last.   Shift+Alt-click: start a new lane on the right.
- * Where an open came from is recorded when it starts: `workspace.getLeaf` / `getUnpinnedLeaf` are wrapped
- * to note the pane type and the lane that was active (and last received input) at call time.
+ * Lanes tabs (lanes-view.ts). All lanes live in ordinary Obsidian tabs of one view type, "editor-lanes": each
+ * lanes tab (LanesView) lays out its lanes itself as DOM columns / stacked rows from a layout definition
+ * (layout.ts, e.g. "40, 30x2, 30"), and each lane is a Lane object (lane.ts) inside it, not a leaf. Every new
+ * lanes tab, in any window, starts with the default layout from the settings and follows it while it has none
+ * of its own; a tab's own layout is set in its "Lane layout…" dialog (layout-modal.ts; ⋯ menu, tab-header menu,
+ * a lane's menu, a command) and saved in its view state with its lanes' notes and any dragged sizes. When a
+ * layout shrinks, the notes of lanes that go move into the remaining ones (layout.ts planRelayout /
+ * planRemove: nothing is lost, pins kept on top); growing adds empty lanes. Since lanes tabs are ordinary tabs,
+ * Obsidian's tab bar, Ctrl+T, splitting, dragging, popping out, closing and "Undo close tab" (which brings a
+ * whole tab back with its notes) work as usual. "Split right / down" or "Open in new window" on a lanes tab (or a
+ * card in one) gives an empty lanes tab with the same layout and lane sizes, no notes (emptyCopyOf). Other views
+ * (canvas, PDF, graph, Bases…) open as ordinary tabs next to lanes tabs.
  *
- * How the editors are hosted: every note gets a real WorkspaceLeaf inside a private WorkspaceSplit. The
- * split is not a child of any workspace split, but its `parent` points at the right sidebar, so Obsidian
- * sees the leaves as attached (they can be the active leaf, so editor commands and hotkeys act on them)
- * while never treating them as main-area tabs. A patched `workspace.iterateLeaves` makes them visible to
- * `iterateAllLeaves` / `getLeavesOfType`, which is how other plugins (Backlinks Full View) find them.
- * Per hosted leaf: it stays pinned (so a link followed inside one goes through the normal "open" path, where
- * lanes-only routing picks it up) and unpinning it (Ctrl+W) closes the card; `getContainer` answers with
- * the lane's window; `setEphemeralState({rename})` edits the card title. Notes mount when expanded and
- * scrolled near view, and unmount when collapsed. Checked against Obsidian 1.15.0's app.js and app.css.
+ * Lock layout (setting): inside lanes tabs, no ad-hoc structural changes: no add / remove-lane buttons or menu
+ * items, no draggable dividers (a tab shows its layout's exact widths). Layouts then change only through the
+ * default in the settings or a tab's "Lane layout…" dialog, which stays available. Unlocked, the dividers can be
+ * dragged (double-click resets) and each lane header has ←→↑↓ (a new lane beside it) and × (remove it, its notes
+ * going to the lane before), which give that tab its own layout.
+ *
+ * "Lanes only" (setting, on by default): every note opened in a main area (any window) goes into a lane
+ * instead of a tab; an empty main-area tab (Ctrl+T, "+", the last tab closed) becomes a lanes tab, and note tabs
+ * that appear without going through openFile (a Workspaces load, another plugin) are swept into lanes. Exceptions
+ * ("Exceptions to lanes only") open as normal tabs. Where a note goes:
+ * - a link followed in a lane: "Link clicked in a lane opens in" (the next lane of that tab, in layout order:
+ *   columns left to right, top to bottom within a column, wrapping from the last lane to the first; or the same
+ *   lane; or the last-used lane);
+ * - a "new tab" open (Ctrl/Cmd-click, middle-click, Open in new tab / window, Split, Shift+Alt-click, "Open in
+ *   new lanes tab"): a new lanes tab (the empty tab Obsidian made for it becomes one), the note in its first lane;
+ * - anything else (explorer, quick switcher, search, Shift-click): the last-used lane of the active lanes tab,
+ *   else of the most recently active lanes tab in the active window, else a new lanes tab there.
+ * Where an open came from is recorded when it starts: `workspace.getLeaf` / `getUnpinnedLeaf` are wrapped to note
+ * the pane type and the lane that last received input at call time.
+ *
+ * How the editors are hosted: every note card gets a real WorkspaceLeaf inside a private WorkspaceSplit. The
+ * split is not a child of any workspace split, but its `parent` points at the right sidebar, so Obsidian sees the
+ * leaves as attached (they can be the active leaf, so editor commands and hotkeys act on them) while never
+ * treating them as main-area tabs. A patched `workspace.iterateLeaves` makes them visible to `iterateAllLeaves` /
+ * `getLeavesOfType`, which is how other plugins (Backlinks Full View) find them; `data-bfv-skip` on a lanes tab
+ * opts its notes out of BFV's panes. Per hosted leaf: it stays pinned (so a link followed inside one goes through
+ * the normal "open" path, where routing picks it up) and unpinning it (Ctrl+W) closes the card; `getContainer`
+ * answers with the tab's window; `setEphemeralState({rename})` edits the card title. Notes mount when expanded
+ * and scrolled near view, and unmount when collapsed. Workspace patches for cards: createLeafBySplit splits the
+ * card's lanes tab instead of its private split, duplicateLeaf gives the empty lanes tab above, moveLeafToPopout
+ * moves the card into a new window's lanes tab, and rightSplit.collapse doesn't steal focus from an active card.
+ * Checked against Obsidian 1.15.0's app.js and app.css.
+ *
+ * 0.1 layouts (one "editor-lane" leaf per lane) aren't converted: their leaves are closed on load, and a window
+ * left without a lanes tab gets a new one with the default layout in place of its first old lane (closeLegacy).
  */
 
 export default class EditorLanesPlugin extends Plugin {
   override settings: Settings = { ...DEFAULTS };
+  /** "Exceptions to lanes only", compiled from the setting. */
+  private isException: Matcher = () => false;
   /** Every private split / hosted leaf, for the iterateLeaves patch and for not routing our own opens. */
   splits = new Set<any>();
-  hostedLeaves = new Map<WorkspaceLeaf, { lane: LaneView; item: Item }>();
-  lastLane: LaneView | null = null;
+  hostedLeaves = new Map<WorkspaceLeaf, { lane: Lane; item: Item }>();
+  private _lastLane: Lane | null = null;
+  /** Lanes tabs, most recently active first. */
+  private recent: LanesView[] = [];
   /** The note card being dragged by its header, if any. */
-  dragItem: { lane: LaneView; item: Item } | null = null;
+  dragItem: { lane: Lane; item: Item } | null = null;
   private swallow: { until: number; el: HTMLElement } | null = null;
   private routing = new Set<WorkspaceLeaf>(); // leaves whose open is being routed right now (the sweep skips them)
   private intents = new WeakMap<WorkspaceLeaf, Intent>();
@@ -61,19 +106,56 @@ export default class EditorLanesPlugin extends Plugin {
   private lastInput: Node | null = null; // target of the last mousedown / keydown in any window
   private windowDocs = new WeakSet<Document>();
   private requestSweep = debounce(() => void this.sweepMainArea(false), 250, true);
+  requestLegacyCleanup = debounce(() => void this.closeLegacy(), 100, true);
+  private noticeAt = 0;
+
+  /** The lane used last, in any tab (setting it also makes it its tab's last-used lane and that tab the most recent). */
+  get lastLane(): Lane | null {
+    return this._lastLane;
+  }
+  set lastLane(lane: Lane | null) {
+    this._lastLane = lane;
+    if (!lane) return;
+    lane.tab.lastLane = lane;
+    this.touchTab(lane.tab);
+  }
 
   override async onload() {
-    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    // loadSettings: 0.1 keys migrated, then laid over the defaults, dropping values of the wrong type or range
+    this.settings = loadSettings(await this.loadData());
+    this.isException = compileExceptions(this.settings.routeExceptions);
     this.addSettingTab(new LanesSettingTab(this.app, this));
-    this.registerView(VIEW_TYPE, leaf => new LaneView(leaf, this));
+    this.registerView(VIEW_TYPE, leaf => new LanesView(leaf, this));
+    this.registerView(LEGACY_VIEW_TYPE, leaf => new LegacyLaneView(leaf, this));
     this.patchIterateLeaves();
     this.patchOpenFile();
     this.patchGetLeaf();
     this.patchCreateLeafBySplit();
     this.patchDuplicateLeaf();
+    this.patchMoveToPopout();
 
-    this.addRibbonIcon("columns-3", "New editor lane", () => void this.newLane(null));
-    this.addCommand({ id: "new-lane", name: "New editor lane", callback: () => void this.newLane(null) });
+    this.addRibbonIcon("columns-3", "New lanes tab", () => void this.newLanesTab());
+    this.addCommand({ id: "new-lane", name: "New lanes tab", callback: () => void this.newLanesTab() });
+    this.addCommand({
+      id: "change-layout",
+      name: "Change lane layout of this tab…",
+      checkCallback: checking => {
+        const tab = this.currentTab();
+        if (!tab) return false;
+        if (!checking) tab.openLayoutDialog();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "add-lane",
+      name: "Add a lane to the right of the current lane",
+      checkCallback: checking => {
+        const lane = this.settings.lockLayout ? null : this.currentLane();
+        if (!lane) return false;
+        if (!checking) void lane.tab.addLaneBeside(lane, "right");
+        return true;
+      },
+    });
     this.addCommand({
       id: "open-current",
       name: "Open current note in an editor lane",
@@ -81,8 +163,8 @@ export default class EditorLanesPlugin extends Plugin {
     });
     this.addCommand({
       id: "open-current-new-lane",
-      name: "Open current note in a new editor lane",
-      checkCallback: checking => this.withActiveFile(checking, f => this.openInLane(f, "new")),
+      name: "Open current note in a new lanes tab",
+      checkCallback: checking => this.withActiveFile(checking, f => this.openInLane(f, "newTab")),
     });
     this.addCommand({
       id: "open-note",
@@ -91,12 +173,12 @@ export default class EditorLanesPlugin extends Plugin {
     });
     this.addCommand({
       id: "close-all",
-      name: "Close all notes in this editor lane",
+      name: "Close all notes in the current editor lane",
       callback: () => this.currentLane()?.closeAll(),
     });
     this.addCommand({
       id: "collapse-all",
-      name: "Collapse all notes in this editor lane",
+      name: "Collapse all notes in the current editor lane",
       callback: () => this.currentLane()?.setAllCollapsed(true),
     });
     this.addCommand({
@@ -119,8 +201,7 @@ export default class EditorLanesPlugin extends Plugin {
       name: "Toggle editor lanes only",
       callback: async () => {
         this.settings.lanesOnly = !this.settings.lanesOnly;
-        await this.saveData(this.settings);
-        if (this.settings.lanesOnly) void this.sweepMainArea(true);
+        await this.settingsChanged("routing");
       },
     });
 
@@ -137,10 +218,10 @@ export default class EditorLanesPlugin extends Plugin {
         );
         menu.addItem(i =>
           i
-            .setTitle("Open in new editor lane")
+            .setTitle("Open in new lanes tab")
             .setIcon("columns-3")
             .setSection("open")
-            .onClick(() => void this.openInLane(file, "new")),
+            .onClick(() => void this.openInLane(file, "newTab")),
         );
       }),
     );
@@ -163,21 +244,77 @@ export default class EditorLanesPlugin extends Plugin {
     // Mouse / keyboard handlers in every window (the main one and popouts)
     this.registerWindow(document);
     this.registerEvent(this.app.workspace.on("window-open", (_w, win) => this.registerWindow(win.document)));
+    // the most recently active lanes tab is where opens from outside any lanes tab go
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", leaf => {
+        const tab = this.tabOf(leaf);
+        if (tab) this.touchTab(tab);
+      }),
+    );
 
-    // Editor lanes only: the main area holds lanes, not tabs. Tabs that appear without going through
-    // openFile (restored layout, Workspaces load, dragged tabs, Ctrl+T) are swept into lanes: all of them on
-    // startup and when the setting is turned on, afterwards only tabs that are new since the last sweep.
+    // Lanes only: tabs that appear without going through openFile (restored layout, Workspaces load, Ctrl+T)
+    // are swept into lanes tabs: all of them on startup and when the setting is turned on, afterwards only tabs
+    // that are new since the last sweep. Old (0.1) lane leaves are closed whenever a layout brings them in.
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.wrapRightSplitCollapse();
         this.requestSweep();
+        if (this.app.workspace.getLeavesOfType(LEGACY_VIEW_TYPE).length) this.requestLegacyCleanup();
       }),
     );
-    this.app.workspace.onLayoutReady(() => {
+    this.app.workspace.onLayoutReady(async () => {
       this.wrapRightSplitCollapse();
-      for (const w of (this.app.workspace as any).floatingSplit?.children ?? []) if (w?.doc) this.registerWindow(w.doc);
+      for (const w of this.popouts()) if (w.doc) this.registerWindow(w.doc);
+      await this.closeLegacy();
       void this.sweepMainArea(true);
     });
+  }
+
+  override onunload() {
+    this.requestSweep.cancel();
+    this.requestLegacyCleanup.cancel();
+    for (const tab of this.allTabs()) tab.teardown();
+  }
+
+  // ---------- settings ----------
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+
+  /** Save, then redo whatever the changed setting affects, without a reload. */
+  async settingsChanged(refresh: Refresh) {
+    await this.saveSettings();
+    if (refresh === "routing") {
+      this.isException = compileExceptions(this.settings.routeExceptions);
+      if (this.settings.lanesOnly) void this.sweepMainArea(true);
+    }
+    // looks, the lock, and the default layout of every tab that hasn't got its own
+    for (const tab of this.allTabs()) tab.applySettings();
+    // Backlinks Full View re-checks its views on layout-change: the ones it skipped (or now must skip) in lanes
+    if (refresh === "backlinks") this.app.workspace.trigger("layout-change");
+  }
+
+  /** "Reset every tab to the default" (settings): drop every open tab's own layout. */
+  async resetAllLayouts() {
+    for (const tab of this.allTabs()) if (tab.layoutInfo().own) await tab.setLayout(null);
+  }
+
+  /** A note at this path keeps opening in normal tabs ("Exceptions to lanes only"). */
+  isExcepted(file: TFile): boolean {
+    return this.isException(file.path);
+  }
+
+  /** At most one Notice a second. */
+  private refuse(msg: string) {
+    const now = Date.now();
+    if (now - this.noticeAt < 1000) return;
+    this.noticeAt = now;
+    new Notice(msg);
+  }
+
+  lockedNotice() {
+    this.refuse("Lane layout is locked in settings; change it with the tab's Lane layout… dialog");
   }
 
   private registerWindow(doc: Document) {
@@ -211,57 +348,49 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   /**
-   * Every Markdown tab in the main area moves into the lane used last (keeping tab order, first tab on top,
-   * and its mode, scroll / cursor and history) and closes; every empty tab becomes an empty lane. Pinned and
-   * linked tabs stay, as do other tabs (canvas, PDF, graph, Bases…). With no lanes yet, the first Markdown
-   * tab becomes the first lane. `all`: look at every tab, not just those new since the last sweep.
+   * Lanes only, in every window: each empty main-area tab becomes a lanes tab; each Markdown tab moves into the
+   * most recently active lanes tab of its window (its last-used lane; keeping tab order, first tab on top, and
+   * its mode, scroll / cursor and history) and closes, or, in a window with no lanes tab, becomes one holding it.
+   * Pinned and linked tabs stay, as do exceptions and other tabs (canvas, PDF, graph, Bases…). `all`: look at
+   * every tab, not just those new since the last sweep.
    */
   async sweepMainArea(all: boolean) {
     if (!this.settings.lanesOnly || this.sweeping) return;
     this.sweeping = true;
     let retry = false;
     try {
-      const ws = this.app.workspace as any;
+      const ws = this.app.workspace;
       const tabs: { leaf: WorkspaceLeaf; file: TFile; opts: AddOpts }[] = [];
       const empties: WorkspaceLeaf[] = [];
-      ws.iterateLeaves(ws.rootSplit, (leaf: WorkspaceLeaf) => {
-        if (this.hostedLeaves.has(leaf) || leaf.view instanceof LaneView) return;
-        if (this.routing.has(leaf) || this.freshIntent(leaf)) {
-          retry = true;
-          return;
-        } // about to be routed
-        if (!all && this.seen.has(leaf)) return;
-        this.seen.add(leaf);
-        const vs = leaf.getViewState(); // also right for deferred (not yet loaded) background tabs
-        if (vs.pinned || (leaf as any).group) return;
-        if (vs.type === "markdown") {
-          const f = this.app.vault.getAbstractFileByPath(String((vs.state as any)?.file ?? ""));
-          if (!(f instanceof TFile)) return;
-          const opts: AddOpts = { mode: (vs.state as any)?.mode };
-          try {
-            opts.eState = leaf.getEphemeralState();
-          } catch {
-            /* deferred view */
+      for (const root of this.windowRoots()) {
+        ws.iterateLeaves(root, (leaf: WorkspaceLeaf) => {
+          if (this.hostedLeaves.has(leaf) || leaf.view instanceof LanesView) return;
+          const vs = leaf.getViewState(); // also right for deferred (not yet loaded) background tabs
+          if (vs.type === VIEW_TYPE || vs.type === LEGACY_VIEW_TYPE) return;
+          if (this.routing.has(leaf) || this.freshIntent(leaf)) {
+            retry = true; // about to be routed
+            return;
           }
-          try {
-            opts.history = (leaf as any).history?.serialize?.();
-          } catch {
-            /* internal API changed */
+          if (!all && this.seen.has(leaf)) return;
+          this.seen.add(leaf);
+          if (vs.pinned || leaf.group) return;
+          if (vs.type === "markdown") {
+            const f = this.app.vault.getAbstractFileByPath(String((vs.state as any)?.file ?? ""));
+            if (!(f instanceof TFile) || this.isExcepted(f)) return;
+            tabs.push({ leaf, file: f, opts: this.tabState(leaf) });
+          } else if (vs.type === "empty") {
+            empties.push(leaf);
           }
-          tabs.push({ leaf, file: f, opts });
-        } else if (vs.type === "empty") {
-          empties.push(leaf);
-        }
-      });
-      for (const leaf of empties) await this.setLane(leaf);
-      let lane = this.targetLane();
+        });
+      }
+      for (const leaf of empties) if (leaf.parent) await this.newTab(leaf, undefined, false);
       for (const { leaf, file, opts } of tabs.reverse()) {
-        if (!lane) {
-          lane = await this.setLane(leaf);
-          await lane?.add(file, opts);
+        const tab = this.recentTabIn(leaf.getContainer());
+        if (!tab) {
+          await (await this.newTab(leaf, undefined, false))?.lanes[0]?.add(file, opts);
           continue;
         }
-        await lane.add(file, opts);
+        await tab.currentLane()?.add(file, opts);
         this.detachQuietly(leaf);
       }
     } catch (e) {
@@ -272,11 +401,66 @@ export default class EditorLanesPlugin extends Plugin {
     if (retry) window.setTimeout(() => this.requestSweep(), INTENT_MS);
   }
 
-  override onunload() {
-    for (const lane of this.allLaneViews()) lane.teardown();
+  /** A tab's mode, scroll / cursor and history, for reopening its note in a lane. */
+  private tabState(leaf: WorkspaceLeaf): AddOpts {
+    const vs = leaf.getViewState();
+    const opts: AddOpts = { mode: (vs.state as any)?.mode };
+    try {
+      opts.eState = leaf.getEphemeralState();
+    } catch {
+      /* deferred view */
+    }
+    try {
+      opts.history = leaf.history?.serialize?.();
+    } catch {
+      /* internal API changed */
+    }
+    return opts;
   }
 
-  private withHostedItem(checking: boolean, fn: (lane: LaneView, it: Item) => unknown): boolean {
+  /**
+   * 0.1 layouts (one "editor-lane" leaf per lane, in any window) aren't converted: their leaves are closed
+   * without "Undo close tab" entries, and a window left without a lanes tab gets one with the default layout in
+   * place of its first old lane. getLeavesOfType also finds old lanes in background tabs (deferred views
+   * report their saved type).
+   */
+  async closeLegacy() {
+    const ws = this.app.workspace;
+    if (!ws.layoutReady) return;
+    const legacy = ws.getLeavesOfType(LEGACY_VIEW_TYPE);
+    if (!legacy.length) return;
+    const byWindow = new Map<WorkspaceContainer, WorkspaceLeaf[]>();
+    for (const leaf of legacy) {
+      if (!this.inMainArea(leaf)) {
+        this.detachQuietly(leaf);
+        continue;
+      }
+      const win = leaf.getContainer();
+      byWindow.set(win, [...(byWindow.get(win) ?? []), leaf]);
+    }
+    let replaced = false;
+    for (const [win, leaves] of byWindow) {
+      let rest = leaves;
+      const hasTab = ws.getLeavesOfType(VIEW_TYPE).some(l => this.inMainArea(l) && l.getContainer() === win);
+      if (!hasTab) {
+        try {
+          await leaves[0].setViewState({ type: VIEW_TYPE });
+          rest = leaves.slice(1);
+          replaced = true;
+        } catch (e) {
+          console.error("[editor-lanes] could not open a lanes tab in place of an old lane", e);
+        }
+      }
+      for (const leaf of rest) this.detachQuietly(leaf);
+    }
+    new Notice(
+      replaced
+        ? "Editor Lanes 0.2 keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened."
+        : "Editor Lanes 0.2 keeps all lanes in one tab: the old lanes were closed.",
+    );
+  }
+
+  private withHostedItem(checking: boolean, fn: (lane: Lane, it: Item) => unknown): boolean {
     const h = this.hostedLeaves.get(this.app.workspace.activeLeaf as WorkspaceLeaf);
     if (!h) return false;
     if (!checking) void fn(h.lane, h.item);
@@ -336,18 +520,34 @@ export default class EditorLanesPlugin extends Plugin {
     );
   }
 
-  /** Lanes only: a note about to open in a main-area leaf goes to a lane instead. */
+  /**
+   * A note about to open in a main-area leaf goes to a lane instead (lanes only), and nothing ever replaces a
+   * card's note or a lanes tab: a note opened into a lanes tab (a file dropped on its tab header, a plugin
+   * opening into the active leaf) goes into its current lane; an exception or a non-note file opened from a card
+   * or into a lanes tab opens as a tab beside the lanes tab.
+   */
   private patchOpenFile() {
     const plugin = this;
     this.register(
       around(WorkspaceLeaf.prototype, {
         openFile: next =>
           async function (this: WorkspaceLeaf, file: TFile, openState?: OpenViewState) {
+            const host = plugin.hostedLeaves.get(this);
+            const tab = host ? host.lane.tab : this.view instanceof LanesView ? this.view : null;
+            if (
+              tab &&
+              file instanceof TFile &&
+              file !== host?.item.file &&
+              (file.extension !== "md" || plugin.isExcepted(file))
+            ) {
+              return plugin.openBeside(tab, file, openState);
+            }
             if (!plugin.shouldRoute(this, file)) return next.call(this, file, openState);
             try {
               await plugin.route(this, file, openState);
             } catch (e) {
               console.error("[editor-lanes] routing to a lane failed, opening normally", e);
+              if (tab) return; // never in place of a card or a lanes tab
               return next.call(this, file, openState);
             }
           },
@@ -362,38 +562,28 @@ export default class EditorLanesPlugin extends Plugin {
    */
   private patchGetLeaf() {
     const ws = this.app.workspace;
+    const plugin = this;
     const record = (name: "getLeaf" | "getUnpinnedLeaf") => (next: AnyFn) =>
       function (this: unknown, ...args: unknown[]) {
-        const from = plugin.inputLane(ws.activeLeaf);
+        const before = ws.activeLeaf;
+        const from = plugin.inputLane(before);
+        const fromItem = from ? plugin.inputItem(from) : null;
         const leaf = next.apply(this, args) as WorkspaceLeaf | null;
-        if (leaf) plugin.intents.set(leaf, { from, paneType: name === "getLeaf" ? args[0] : false, at: Date.now() });
+        if (leaf) {
+          plugin.intents.set(leaf, {
+            from,
+            fromItem,
+            paneType: name === "getLeaf" ? args[0] : false,
+            wasActive: leaf === before,
+            at: Date.now(),
+          });
+        }
         return leaf;
       };
-    const plugin = this;
     this.register(around(loose(ws), { getLeaf: record("getLeaf"), getUnpinnedLeaf: record("getUnpinnedLeaf") }));
   }
 
-  /**
-   * "Split right" / "Split down" (commands, tab menu) duplicate the leaf, which for a lane would copy all its
-   * notes. For a lane, make a new empty lane in that direction instead.
-   */
-  private patchDuplicateLeaf() {
-    const plugin = this;
-    this.register(
-      around(loose(this.app.workspace), {
-        duplicateLeaf: next =>
-          async function (this: unknown, leaf: WorkspaceLeaf, mode?: unknown, dir?: unknown) {
-            if (leaf?.view instanceof LaneView) {
-              const d = mode === "horizontal" || dir === "horizontal" ? "down" : "right";
-              return (await plugin.newLaneAt(leaf.view, d))?.leaf;
-            }
-            return next.call(this, leaf, mode, dir);
-          },
-      }),
-    );
-  }
-
-  /** Splitting a hosted note (Split down, linked views…) splits its lane instead of the private split. */
+  /** Splitting a hosted note (Split down, linked views…) splits its lanes tab instead of the private split. */
   private patchCreateLeafBySplit() {
     const plugin = this;
     this.register(
@@ -401,7 +591,44 @@ export default class EditorLanesPlugin extends Plugin {
         createLeafBySplit: (next: AnyFn) =>
           function (this: unknown, leaf: WorkspaceLeaf, ...rest: unknown[]) {
             const host = leaf ? plugin.hostedLeaves.get(leaf) : undefined;
-            return next.call(this, host ? host.lane.leaf : leaf, ...rest);
+            return next.call(this, host ? host.lane.tab.leaf : leaf, ...rest);
+          },
+      }),
+    );
+  }
+
+  /**
+   * "Split right / down", "Open in new window" and the like (workspace.duplicateLeaf, from the commands and
+   * tab menu) on a lanes tab or a card in one: Obsidian would copy the whole tab, notes and all, so the same
+   * notes would have editors in two places. Instead the new pane (split off the lanes tab, or a new tab /
+   * window) is an empty lanes tab with the source tab's layout and lane sizes, and no notes.
+   */
+  private patchDuplicateLeaf() {
+    const plugin = this;
+    this.register(
+      around(loose(this.app.workspace), {
+        duplicateLeaf: next =>
+          async function (this: unknown, leaf: WorkspaceLeaf, mode?: unknown, dir?: unknown) {
+            const tab =
+              leaf?.view instanceof LanesView ? leaf.view : leaf ? plugin.hostedLeaves.get(leaf)?.lane.tab : null;
+            if (!tab) return next.call(this, leaf, mode, dir);
+            return plugin.emptyCopyOf(tab, mode, dir);
+          },
+      }),
+    );
+  }
+
+  /** "Move to new window" (tab menu, command) on a card: the card moves into a new window's lanes tab, pin and all. */
+  private patchMoveToPopout() {
+    const plugin = this;
+    this.register(
+      around(this.app.workspace, {
+        moveLeafToPopout: (next: AnyFn) =>
+          function (this: unknown, leaf: WorkspaceLeaf, ...rest: unknown[]) {
+            const host = leaf ? plugin.hostedLeaves.get(leaf) : undefined;
+            if (!host) return next.call(this, leaf, ...rest);
+            void plugin.cardToNewWindow(host.lane, host.item);
+            return undefined;
           },
       }),
     );
@@ -413,12 +640,12 @@ export default class EditorLanesPlugin extends Plugin {
    */
   private wrapRightSplitCollapse() {
     const ws = this.app.workspace;
-    const rs = ws.rightSplit as WorkspaceSplit & { __laneCollapse?: boolean };
+    const rs = ws.rightSplit as typeof ws.rightSplit & { __laneCollapse?: boolean };
     if (!rs || rs.__laneCollapse || typeof rs.collapse !== "function") return;
     rs.__laneCollapse = true;
     const plugin = this;
     const uninstall = around(rs, {
-      collapse: next =>
+      collapse: (next: AnyFn) =>
         function (this: unknown, ...args: unknown[]) {
           const a = ws.activeLeaf as (WorkspaceLeaf & { getRoot: () => unknown }) | null;
           if (!a || !plugin.hostedLeaves.has(a)) return next.apply(this, args);
@@ -436,34 +663,36 @@ export default class EditorLanesPlugin extends Plugin {
     });
   }
 
+  // ---------- routing ----------
+
   private freshIntent(leaf: WorkspaceLeaf): Intent | null {
     const i = this.intents.get(leaf);
     return i && Date.now() - i.at < INTENT_MS ? i : null;
   }
 
-  /** The lane of `leaf`, if the user's last mouse / key input was inside that lane (a link followed there). */
-  private inputLane(leaf: WorkspaceLeaf | null): LaneView | null {
-    const lane = this.laneOfLeaf(leaf);
+  /** The lane the user's last mouse / key input was in, if it's in `leaf`'s lanes tab (a link followed there). */
+  private inputLane(leaf: WorkspaceLeaf | null): Lane | null {
+    const tab = this.tabOf(leaf);
     const t = this.lastInput;
-    return lane && t && lane.containerEl.contains(t) ? lane : null;
+    return (tab && t && tab.lanes.find(l => l.el.contains(t))) || null;
   }
 
-  private shouldRoute(leaf: WorkspaceLeaf, file: unknown): boolean {
+  /** The card in `lane` that the user's last mouse / key input was in. */
+  inputItem(lane: Lane): Item | null {
+    const t = this.lastInput;
+    return (t && lane.items.find(i => i.el.contains(t))) || null;
+  }
+
+  shouldRoute(leaf: WorkspaceLeaf, file: unknown): boolean {
     if (!(file instanceof TFile) || file.extension !== "md") return false;
     const host = this.hostedLeaves.get(leaf);
     if (host) return host.item.file !== file; // never replace a card's note in place
-    if (!this.settings.lanesOnly || leaf.view instanceof LaneView) return false;
-    const ws = this.app.workspace as any;
-    const root = leaf.getRoot();
-    if (root === ws.rootSplit) return true;
-    if (root !== ws.floatingSplit) return false;
-    // a popout window: only a link followed in a lane there (not "Open in new window")
-    const intent = this.freshIntent(leaf);
-    return !!intent?.from && intent.paneType !== "window";
+    if (leaf.view instanceof LanesView) return true; // nor a lanes tab
+    if (!this.settings.lanesOnly || this.isExcepted(file)) return false;
+    return this.inMainArea(leaf);
   }
 
-  /** Where a routed open lands: the next lane after the one it came from, else the lane used last. */
-  private async route(leaf: WorkspaceLeaf, file: TFile, openState?: any) {
+  async route(leaf: WorkspaceLeaf, file: TFile, openState?: any) {
     const intent = this.freshIntent(leaf);
     this.intents.delete(leaf);
     this.routing.add(leaf);
@@ -478,120 +707,259 @@ export default class EditorLanesPlugin extends Plugin {
     const ws = this.app.workspace;
     const host = this.hostedLeaves.get(leaf);
     const from = host ? host.lane : intent ? intent.from : this.inputLane(ws.activeLeaf);
+    const fromItem = host ? host.item : intent ? intent.fromItem : from ? this.inputItem(from) : null;
     const p = intent?.paneType;
-    const wantNew = !host && (p === "tab" || p === true || p === "split");
+    const wantNew = !host && (p === "tab" || p === true || p === "split" || p === "window");
     // like WorkspaceLeaf.openFile: `active` defaults to whether the picked leaf is the active one
     const opts: AddOpts = {
       focus: openState?.active ?? leaf === ws.activeLeaf,
       eState: openState?.eState,
       mode: openState?.state?.mode,
+      after: fromItem,
     };
-    if (!this.lanes().length) {
-      // first note with no lanes yet: an empty tab becomes the first lane, otherwise a lane opens beside it
-      const lane = leaf.view.getViewType() === "empty" ? await this.setLane(leaf) : await this.newLane(null);
-      await lane?.add(file, opts);
+    // opened into a lanes tab itself: from one of its lanes, as a link followed there ("same" / "next");
+    // otherwise into its current lane
+    if (leaf.view instanceof LanesView) {
+      const tab = leaf.view;
+      const lt = this.settings.linkTarget;
+      const base = from?.tab === tab && lt !== "last" ? from : null;
+      const done = base
+        ? await this.openInLane(file, lt, base, opts)
+        : await this.openInLane(file, "same", tab.currentLane(), opts);
+      if (!done) throw new Error("no lane to open in");
       return;
     }
-    await this.openInLane(file, wantNew ? "new" : from ? "next" : "last", from, opts);
-    // the tab Obsidian picked for this open is now unused: drop it if it's empty and not the last one
-    if (leaf.view.getViewType() === "empty" && ws.getLeavesOfType("empty").length + this.lanes().length > 1) {
-      leaf.detach();
+    // The empty tab Obsidian made or picked becomes a lanes tab for the note: for a "new tab" open (Ctrl-click,
+    // Open in new tab / window, Split), when it's the tab you were in (Ctrl+T, then the quick switcher), or
+    // when its window has no lanes tab yet.
+    if (
+      !host &&
+      this.isEmptyMainLeaf(leaf) &&
+      (wantNew || intent?.wasActive || !this.recentTabIn(leaf.getContainer()))
+    ) {
+      const tab = await this.newTab(leaf);
+      if (!tab?.lanes[0]) throw new Error("no lane to open in"); // route() then opens it normally
+      await tab.lanes[0].add(file, { ...opts, after: null });
+      return;
     }
+    // a link followed in a lane: "Link clicked in a lane opens in" (next lane by default)
+    const where: Where = wantNew ? "newTab" : from ? this.settings.linkTarget : "last";
+    if (!(await this.openInLane(file, where, from, opts))) throw new Error("no lane to open in");
+    this.dropUsedLeaf(leaf);
   }
 
-  // ---------- lanes ----------
+  /** The tab Obsidian picked (or made) for a routed open is now unused: close it if it's empty and not alone. */
+  private dropUsedLeaf(leaf: WorkspaceLeaf) {
+    if (!this.isEmptyMainLeaf(leaf)) return;
+    let n = 0;
+    this.app.workspace.iterateLeaves(leaf.getContainer() as unknown as WorkspaceItem, () => {
+      n++;
+    });
+    if (n > 1) this.detachQuietly(leaf); // a popout's only tab would close the window
+  }
 
-  allLaneViews(): LaneView[] {
+  private isEmptyMainLeaf(leaf: WorkspaceLeaf): boolean {
+    return (
+      !this.hostedLeaves.has(leaf) && !!leaf.parent && leaf.view?.getViewType() === "empty" && this.inMainArea(leaf)
+    );
+  }
+
+  /** In a window's main area (the main window's, or a popout's), not a sidebar. */
+  inMainArea(item: WorkspaceItem): boolean {
+    const ws = this.app.workspace;
+    const root = typeof item?.getRoot === "function" ? item.getRoot() : null;
+    return !!root && (root === ws.rootSplit || root === (ws.floatingSplit as unknown as WorkspaceItem));
+  }
+
+  // ---------- lanes tabs ----------
+
+  /** Every open (loaded) lanes tab. */
+  allTabs(): LanesView[] {
     return this.app.workspace
       .getLeavesOfType(VIEW_TYPE)
       .map(l => l.view)
-      .filter((v): v is LaneView => v instanceof LaneView);
+      .filter((v): v is LanesView => v instanceof LanesView);
+  }
+
+  /** Lanes tabs in main areas, in layout-tree order (main window first). */
+  tabs(): LanesView[] {
+    return this.allTabs().filter(t => this.inMainArea(t.leaf));
+  }
+
+  tabOf(leaf: WorkspaceLeaf | null): LanesView | null {
+    if (!leaf) return null;
+    if (leaf.view instanceof LanesView) return leaf.view;
+    return this.hostedLeaves.get(leaf)?.lane.tab ?? null;
+  }
+
+  touchTab(tab: LanesView) {
+    if (this.recent[0] === tab) return;
+    this.recent = [tab, ...this.recent.filter(t => t !== tab)];
+  }
+
+  forgetTab(tab: LanesView) {
+    this.recent = this.recent.filter(t => t !== tab);
+    if (this._lastLane?.tab === tab) this._lastLane = null;
+  }
+
+  /** The most recently active lanes tab in window `win`, else its first one. */
+  private recentTabIn(win: WorkspaceContainer): LanesView | null {
+    const here = this.tabs().filter(t => t.leaf.getContainer() === win);
+    return this.recent.find(t => here.includes(t)) ?? here[0] ?? null;
+  }
+
+  /** The window (WorkspaceContainer) that has focus: a popout, or the main window's rootSplit. */
+  private activeContainer(): WorkspaceContainer {
+    const ws = this.app.workspace;
+    const win = typeof activeWindow !== "undefined" ? activeWindow : window;
+    return (this.popouts().find(w => w.win === win) ?? ws.rootSplit) as unknown as WorkspaceContainer;
+  }
+
+  /** The main window's rootSplit and every open popout window (each a WorkspaceContainer). */
+  private windowRoots(): WorkspaceItem[] {
+    return [this.app.workspace.rootSplit, ...this.popouts()] as unknown as WorkspaceItem[];
+  }
+
+  /** The open popout windows (WorkspaceWindow: `type` "window", with a live `win`). */
+  private popouts(): { win?: Window | null; doc?: Document; type?: string }[] {
+    const kids = (this.app.workspace.floatingSplit?.children ?? []) as { win?: Window | null; type?: string }[];
+    return kids.filter(w => w?.type === "window" && !!w.win);
   }
 
   /**
-   * Lanes in the main area, then popout windows, in layout-tree order (left to right). getLeavesOfType walks
-   * the tree depth-first; on-screen position would be wrong for lanes in hidden tabs or other windows.
+   * Make `leaf` a lanes tab with the default layout, or, without one, a new tab in window `win` (default: the
+   * active one): an empty tab there is reused, else a new tab joins the group of the window's most recent leaf.
+   * `active`: make it the active tab (not for tabs the sweep converts in the background).
    */
-  lanes(): LaneView[] {
-    const ws = this.app.workspace as any;
-    return this.allLaneViews().filter(v => {
-      const r = v.leaf.getRoot();
-      return r === ws.rootSplit || r === ws.floatingSplit;
-    });
+  async newTab(leaf?: WorkspaceLeaf, win?: WorkspaceContainer, active = true): Promise<LanesView | null> {
+    const target = leaf ?? this.emptyLeafIn(win ?? this.activeContainer()) ?? this.createTabIn(win);
+    await target.setViewState({ type: VIEW_TYPE, active });
+    const tab = target.view instanceof LanesView ? target.view : null;
+    if (tab) this.touchTab(tab);
+    return tab;
   }
 
-  laneOfLeaf(leaf: WorkspaceLeaf | null): LaneView | null {
+  /** "New lanes tab" (ribbon, command): always a new tab in the active window. */
+  async newLanesTab() {
+    const tab = await this.newTab(this.createTabIn());
+    if (tab) await this.app.workspace.revealLeaf(tab.leaf);
+  }
+
+  private emptyLeafIn(win: WorkspaceContainer): WorkspaceLeaf | null {
+    let found: WorkspaceLeaf | null = null;
+    this.app.workspace.iterateLeaves(win as unknown as WorkspaceItem, leaf => {
+      if (!found && this.isEmptyMainLeaf(leaf) && !this.routing.has(leaf)) found = leaf;
+    });
+    return found;
+  }
+
+  /** A new tab in window `win` (default: the active one), next to its most recent leaf. */
+  private createTabIn(win?: WorkspaceContainer): WorkspaceLeaf {
+    const ws = this.app.workspace;
+    const root = (win ?? this.activeContainer()) as unknown as WorkspaceParent;
+    const recent = ws.getMostRecentLeaf(root);
+    const group = recent?.parent instanceof WorkspaceTabs ? recent.parent : undefined;
+    return group ? ws.createLeafInTabGroup(group) : ws.getLeaf("tab");
+  }
+
+  laneOfLeaf(leaf: WorkspaceLeaf | null): Lane | null {
     if (!leaf) return null;
-    if (leaf.view instanceof LaneView) return leaf.view;
+    if (leaf.view instanceof LanesView) return leaf.view.currentLane();
     return this.hostedLeaves.get(leaf)?.lane ?? null;
   }
 
-  /** The lane commands act on: the active one, else the one used last. */
-  currentLane(): LaneView | null {
+  /** The lane commands act on: the active one, else the one opens go to. */
+  currentLane(): Lane | null {
     return this.laneOfLeaf(this.app.workspace.activeLeaf) ?? this.targetLane();
   }
 
-  private targetLane(): LaneView | null {
-    const lanes = this.lanes();
-    if (this.lastLane && lanes.includes(this.lastLane)) return this.lastLane;
-    return lanes[lanes.length - 1] ?? null;
+  /** The lanes tab commands act on: the active one, else the one opens go to. */
+  currentTab(): LanesView | null {
+    return this.tabOf(this.app.workspace.activeLeaf) ?? this.targetLane()?.tab ?? null;
   }
 
-  private async setLane(leaf: WorkspaceLeaf): Promise<LaneView | null> {
-    await leaf.setViewState({ type: VIEW_TYPE, active: true });
-    return leaf.view instanceof LaneView ? leaf.view : null;
+  /**
+   * Where an open that doesn't come from a lane goes: the last-used lane of the active lanes tab, else of the
+   * most recently active lanes tab in the active window. Null if that window has none.
+   */
+  private targetLane(): Lane | null {
+    const act = this.tabOf(this.app.workspace.activeLeaf);
+    if (act && this.inMainArea(act.leaf)) return act.currentLane();
+    return this.recentTabIn(this.activeContainer())?.currentLane() ?? null;
   }
 
-  /** A new lane to the right of `after` (or of the rightmost lane, or of the current tab). */
-  /** A new, empty lane beside `lane`: left / right (side by side) or up / down (stacked). */
-  async newLaneAt(lane: LaneView, dir: LaneDir): Promise<LaneView | null> {
-    const ws = this.app.workspace as any;
-    const direction = dir === "left" || dir === "right" ? "vertical" : "horizontal";
-    const leaf: WorkspaceLeaf = ws.createLeafBySplit(lane.leaf, direction, dir === "left" || dir === "up");
-    const created = await this.setLane(leaf);
-    if (created) this.lastLane = created;
-    return created;
-  }
-
-  async newLane(after: LaneView | null): Promise<LaneView | null> {
-    const ws = this.app.workspace as any;
-    const lanes = this.lanes();
-    const anchor: WorkspaceLeaf | null = after?.leaf ?? lanes[lanes.length - 1]?.leaf ?? ws.getMostRecentLeaf();
-    const root = anchor?.getRoot();
-    let leaf: WorkspaceLeaf;
-    if (anchor && (root === ws.rootSplit || root === ws.floatingSplit)) leaf = ws.createLeafBySplit(anchor, "vertical");
-    else leaf = ws.getLeaf("split", "vertical");
-    const lane = await this.setLane(leaf);
-    if (lane) this.lastLane = lane;
-    return lane;
-  }
-
-  async openInLane(file: TFile, where: Where, from: LaneView | null = null, opts: AddOpts = {}) {
-    let lane: LaneView | null = null;
-    if (where === "next" && from) {
-      const win = from.leaf.getContainer();
-      const lanes = this.lanes().filter(l => l.leaf.getContainer() === win); // same window
-      const i = lanes.indexOf(from);
-      lane = i >= 0 ? (lanes[i + 1] ?? null) : null;
-      if (!lane) lane = await this.newLane(from);
-    } else if (where === "new") {
-      lane = await this.newLane(null);
-    } else {
-      lane = this.targetLane() ?? (await this.newLane(null));
+  /** Pick the lane for an open (making a lanes tab where needed). */
+  private async laneFor(where: Where, from: Lane | null): Promise<Lane | null> {
+    if (where === "same" && from) return from;
+    if (where === "next" && from) return wrapStep(from.tab.lanes, from, 1);
+    if (where === "newTab") {
+      const tab = await this.newTab(undefined, from ? from.tab.leaf.getContainer() : undefined);
+      return tab?.lanes[0] ?? null;
     }
-    if (!lane) return;
-    if (opts.focus !== false) await this.app.workspace.revealLeaf(lane.leaf); // not for background opens
-    await lane.add(file, opts);
+    return this.targetLane() ?? (await this.newTab())?.lanes[0] ?? null;
   }
 
-  notePointerIn(lane: LaneView) {
+  /** A card showing `file` in a lane other than `except`: in `except`'s tab first, then its window, then anywhere. */
+  private findCard(file: TFile, except: Lane): { lane: Lane; item: Item } | null {
+    const win = except.tab.leaf.getContainer();
+    const rank = (l: Lane) => (l.tab === except.tab ? 2 : l.tab.leaf.getContainer() === win ? 1 : 0);
+    const lanes = this.tabs()
+      .flatMap(t => t.lanes)
+      .filter(l => l !== except)
+      .sort((a, b) => rank(b) - rank(a));
+    for (const lane of lanes) {
+      const item = lane.items.find(i => i.file === file);
+      if (item) return { lane, item };
+    }
+    return null;
+  }
+
+  /** Open `file` in a lane; false if there was no lane to open it in. */
+  async openInLane(file: TFile, where: Where, from: Lane | null = null, opts: AddOpts = {}): Promise<boolean> {
+    const lane = await this.laneFor(where, from);
+    if (!lane) return false;
+    // "Note already open in another lane" (default: open another copy here), across all lanes of all tabs
+    const dup = this.settings.duplicateMode;
+    if (dup !== "copy" && !lane.items.some(i => i.file === file)) {
+      const other = this.findCard(file, lane);
+      if (other && dup === "jump") {
+        await other.lane.reveal(other.item);
+        if (opts.eState && other.item.leaf) other.item.leaf.setEphemeralState(opts.eState);
+        return true;
+      }
+      if (other) {
+        if (opts.focus !== false) await this.app.workspace.revealLeaf(lane.tab.leaf);
+        const index = insertIndex(lane.items, this.settings.newNotePosition, opts.after);
+        await this.moveItem(other.lane, other.item, lane, index);
+        const moved = lane.items.find(i => i.file === file); // a new card: the old one's editor closed
+        if (opts.eState && moved?.leaf) moved.leaf.setEphemeralState(opts.eState);
+        return true;
+      }
+    }
+    if (opts.focus !== false) await this.app.workspace.revealLeaf(lane.tab.leaf); // not for background opens
+    await lane.add(file, opts);
+    return true;
+  }
+
+  /**
+   * An exception (or a file that isn't a note) opened from a card or into a lanes tab: a normal tab in the lanes
+   * tab's tab group, else wherever Obsidian puts a new tab.
+   */
+  async openBeside(tab: LanesView, file: TFile, openState?: OpenViewState) {
+    const ws = this.app.workspace;
+    const group = tab.leaf.parent;
+    const leaf = group instanceof WorkspaceTabs ? ws.createLeafInTabGroup(group) : ws.getLeaf("tab");
+    await leaf.openFile(file, { ...openState, active: true });
+  }
+
+  notePointerIn(lane: Lane) {
     this.lastLane = lane;
   }
 
   // ---------- moving notes between lanes ----------
 
   /** Move a card to `to` at `index` (counted without the card). Across lanes its editor reopens there. */
-  async moveItem(from: LaneView, it: Item, to: LaneView, index: number) {
+  async moveItem(from: Lane, it: Item, to: Lane, index: number) {
     if (!from.items.includes(it)) return;
     if (from === to) {
       from.placeAt(it, index);
@@ -600,20 +968,37 @@ export default class EditorLanesPlugin extends Plugin {
     await to.insertTaken(from.take(it), index);
   }
 
-  /** Move a card to the lane before / after its own (same window); past the last one, a new lane. */
-  async moveToLane(from: LaneView, it: Item, step: 1 | -1) {
-    const win = from.leaf.getContainer();
-    const lanes = this.lanes().filter(l => l.leaf.getContainer() === win);
-    let to: LaneView | null = lanes[lanes.indexOf(from) + step] ?? null;
-    if (!to) to = await this.newLaneAt(from, step < 0 ? "left" : "right");
-    if (to) await this.moveItem(from, it, to, 0);
+  /** Move a card to the lane before / after its own in its tab's layout order, wrapping round at either end. */
+  async moveToLane(from: Lane, it: Item, step: 1 | -1) {
+    const to = wrapStep(from.tab.lanes, from, step);
+    if (!to || to === from) return this.refuse("This lanes tab has only one lane");
+    await this.moveItem(from, it, to, 0);
+  }
+
+  /** "Split" etc. on a lanes tab or a card: an empty lanes tab beside it (or in a new tab / window), same layout. */
+  async emptyCopyOf(src: LanesView, mode: unknown, dir: unknown): Promise<WorkspaceLeaf> {
+    const ws = this.app.workspace;
+    // duplicateLeaf(leaf, "vertical" | "horizontal") means a split in that direction (see app.js)
+    const split = mode === "split" || mode === "vertical" || mode === "horizontal";
+    const d = mode === "horizontal" || dir === "horizontal" ? "horizontal" : "vertical";
+    const leaf = split ? ws.createLeafBySplit(src.leaf, d) : ws.getLeaf((mode ?? "tab") as PaneType);
+    const { layout, sizes } = src.getState();
+    await leaf.setViewState({ type: VIEW_TYPE, active: true, state: { layout, sizes, lanes: [] } });
+    if (leaf.view instanceof LanesView) this.touchTab(leaf.view);
+    return leaf;
+  }
+
+  /** "Move to new window" on a card: it moves into the first lane of a new window's lanes tab, pin and all. */
+  async cardToNewWindow(lane: Lane, it: Item) {
+    const tab = await this.newTab(this.app.workspace.openPopoutLeaf());
+    if (tab?.lanes[0]) await this.moveItem(lane, it, tab.lanes[0], 0);
   }
 
   endItemDrag() {
     const d = this.dragItem;
     this.dragItem = null;
     d?.item.el.removeClass("is-lane-dragging");
-    for (const l of this.allLaneViews()) l.clearDrop();
+    for (const t of this.allTabs()) for (const l of t.lanes) l.clearDrop();
   }
 
   // ---------- shift-click ----------
@@ -666,6 +1051,6 @@ export default class EditorLanesPlugin extends Plugin {
     e.preventDefault();
     e.stopImmediatePropagation();
     this.swallow = { until: Date.now() + SWALLOW_MS, el };
-    void this.openInLane(dest, e.altKey ? "new" : "last");
+    void this.openInLane(dest, e.altKey ? "newTab" : "last");
   }
 }

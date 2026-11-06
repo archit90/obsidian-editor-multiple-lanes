@@ -1,13 +1,114 @@
-/* Editor Lanes: the panel scrolls; each hosted editor grows to its content instead of scrolling itself. */
-.lane-view {
+/* Editor Lanes. A lanes tab (.lanes-view) lays out its lanes itself: .lanes-grid holds columns (.lanes-col,
+   flex-grow = width share) of stacked lanes (.lane, flex-grow = row share), with .lanes-divider between them.
+   Each lane scrolls; each hosted editor grows to its content instead of scrolling itself. */
+.lanes-view {
   padding: 0 !important;
   display: flex;
   flex-direction: column;
   overflow: hidden !important;
 }
-.lane-view.is-drop-target {
+.lanes-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.lanes-col {
+  flex-basis: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.lane {
+  flex-basis: 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.lane.is-drop-target {
   outline: 2px dashed var(--interactive-accent, #7b6cd9);
   outline-offset: -4px;
+}
+
+/* Dividers: draggable (unlocked) with a highlight on hover; a plain line while the layout is locked. */
+.lanes-divider {
+  flex: none;
+  background: var(--background-modifier-border, #ddd);
+  position: relative;
+  touch-action: none;
+}
+.lanes-divider.mod-col {
+  width: 1px;
+  cursor: col-resize;
+}
+.lanes-divider.mod-row {
+  height: 1px;
+  cursor: row-resize;
+}
+/* a wider grab area than the 1px line */
+.lanes-divider::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+}
+.lanes-divider.mod-col::after {
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+.lanes-divider.mod-row::after {
+  left: 0;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+}
+.lanes-grid:not(.is-locked) .lanes-divider:hover,
+.lanes-divider.is-dragging {
+  background: var(--interactive-accent, #7b6cd9);
+}
+.lanes-grid.is-locked .lanes-divider {
+  cursor: default;
+}
+.lanes-grid.is-locked .lanes-divider::after {
+  display: none;
+}
+
+/* A lane's small header: "Lane n", its buttons (unlocked: add a lane beside it, remove it) and ⋯. */
+.lane-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  padding: 0 4px 0 8px;
+  font-size: var(--font-ui-smaller, 0.8em);
+  color: var(--text-muted, #888);
+  border-bottom: 1px solid var(--background-modifier-border, #ddd);
+}
+.lane-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lane-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+.lane-action {
+  padding: 2px;
+  height: auto;
+  opacity: 0.35;
+}
+.lane-action svg {
+  width: 14px;
+  height: 14px;
+}
+.lane-header:hover .lane-action,
+.lane-action:focus-visible {
+  opacity: 1;
 }
 
 .lane-list {
@@ -17,7 +118,7 @@
   padding: 4px 6px 40vh;
 }
 .lane-empty {
-  color: var(--text-faint, #999);
+  color: var(--text-muted, #888);
   padding: 12px;
   font-size: var(--font-ui-small, 0.9em);
 }
@@ -31,6 +132,7 @@
   margin: 8px 0;
   background: var(--background-primary, #fff);
   box-shadow: var(--shadow-s, 0 1px 3px rgba(0, 0, 0, 0.12));
+  position: relative; /* for the drop line */
 }
 /* the note being edited stands out */
 .lane-item:focus-within {
@@ -64,6 +166,7 @@
   box-shadow: none;
   color: var(--text-muted, #888);
   cursor: pointer;
+  font-size: 1em;
 }
 .lane-chevron:focus-visible {
   box-shadow: 0 0 0 2px var(--background-modifier-border-focus, #999);
@@ -88,6 +191,7 @@
   border-radius: var(--radius-s, 4px);
   padding: 0 2px;
   min-width: 2em;
+  font-size: 1.02em; /* a little larger than the folder prefix */
 }
 .lane-item-title:hover {
   background: var(--background-modifier-hover, rgba(0, 0, 0, 0.05));
@@ -199,30 +303,19 @@
 
 /* Lane background (the part that isn't a note) uses the secondary shade, so each note card, which keeps the
    editor background, stands out. Obsidian paints main-area .view-content with --background-primary. */
-.workspace-leaf-content[data-type="editor-lane"] > .view-content.lane-view,
-.lane-view {
+.workspace-leaf-content[data-type="editor-lanes"] > .view-content.lanes-view,
+.lane {
   background-color: var(--background-secondary, #f2f2f2) !important;
 }
-.lane-view .lane-empty {
-  color: var(--text-muted, #888);
-}
 
-/* bigger header text: name a little larger than the folder prefix */
-.lane-item-title {
-  font-size: 1.02em;
-}
-.lane-chevron {
-  font-size: 1em;
-}
-
-/* Lane header: a lane has no navigation history and its title says nothing, so hide the back/forward
-   buttons and the "Editor lane" title. The ⋯ menu (lane actions) stays. Hosted notes hide their header
+/* Lanes tab header: a lanes tab has no navigation history and the tab bar already shows its title, so hide the
+   back/forward buttons and the title. "Lane layout…" and the ⋯ menu stay. Hosted notes hide their header
    separately (.lane-item-body .view-header). */
-.workspace-leaf-content[data-type="editor-lane"] > .view-header .view-header-nav-buttons,
-.workspace-leaf-content[data-type="editor-lane"] > .view-header .view-header-title-container {
+.workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-header-nav-buttons,
+.workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-header-title-container {
   display: none !important;
 }
-.workspace-leaf-content[data-type="editor-lane"] > .view-header .view-actions {
+.workspace-leaf-content[data-type="editor-lanes"] > .view-header .view-actions {
   margin-left: auto;
 }
 
@@ -258,9 +351,6 @@
 }
 
 /* Dragging a card by its header: the card fades; a line shows where it (or a dropped note) will land. */
-.lane-item {
-  position: relative;
-}
 .lane-item-header[draggable="true"] {
   cursor: grab;
 }
@@ -284,4 +374,93 @@
 }
 .lane-item.lane-drop-after::after {
   bottom: -6px;
+}
+
+/* ---------- settings-driven looks (see LanesView.applyLooks) ---------- */
+
+/* Header size: compact */
+.lanes-view.lane-compact .lane-item-header {
+  padding: 2px 8px;
+  min-height: 24px;
+  gap: 4px;
+  font-size: var(--font-ui-small, 0.9em);
+}
+.lanes-view.lane-compact .lane-item {
+  margin: 4px 0;
+}
+
+/* Note height: capped. The hosted editor still grows to its content (rules above); the card body scrolls. */
+.lanes-view.lane-capped .lane-item-body {
+  max-height: var(--lane-note-max-height, 600px);
+  overflow-y: auto;
+}
+
+/* Backlinks panes off: hide Backlinks Full View's panes in lanes (BFV also skips these views; this covers an
+   older BFV that doesn't check data-bfv-skip). */
+.lanes-view[data-bfv-skip] .bfv-container {
+  display: none !important;
+}
+
+/* Settings tab */
+.lane-setting-invalid {
+  border-color: var(--text-error, #d33) !important;
+  box-shadow: 0 0 0 1px var(--text-error, #d33) !important;
+}
+.lane-setting-number {
+  width: 7em;
+}
+.lane-setting-textarea {
+  width: 100%;
+  min-width: 16em;
+  font-family: var(--font-monospace, monospace);
+}
+.lane-layout-info {
+  padding: 0 0 0.75em;
+}
+.lane-layout-summary {
+  color: var(--text-muted, #888);
+  font-size: var(--font-ui-small, 0.9em);
+  margin-bottom: 6px;
+}
+.lane-layout-summary.lane-setting-error {
+  color: var(--text-error, #d33);
+}
+.lane-layout-preview {
+  display: flex;
+  gap: 4px;
+  height: 64px;
+  max-width: 320px;
+}
+.lane-layout-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-basis: 0;
+  min-width: 8px;
+}
+.lane-layout-cell {
+  flex: 1 1 0;
+  border: 1px solid var(--background-modifier-border-hover, #bbb);
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-secondary, #f2f2f2);
+}
+
+/* "Lane layout…" dialog */
+.lane-layout-hint {
+  color: var(--text-muted, #888);
+  font-size: var(--font-ui-small, 0.9em);
+  margin: 0 0 0.75em;
+}
+.lane-layout-input input {
+  width: 100%;
+  font-family: var(--font-monospace, monospace);
+}
+.lane-layout-input {
+  margin-bottom: 8px;
+}
+.lane-layout-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
 }

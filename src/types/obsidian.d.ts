@@ -24,27 +24,27 @@ declare module "obsidian" {
   }
 
   interface Workspace {
-    floatingSplit: WorkspaceParent & { children: (WorkspaceParent & { doc?: Document })[] };
+    /** Holds the popout windows (WorkspaceWindow, `type` "window"); a popout leaf's getRoot() is this. */
+    floatingSplit: WorkspaceParent & {
+      children: (WorkspaceParent & { doc?: Document; win?: Window | null; type?: string })[];
+    };
     /** Walks `root`'s children; the callback returning true stops the walk. Also called as (cb, root). */
     iterateLeaves(root: WorkspaceItem, cb: (leaf: WorkspaceLeaf) => boolean | void): boolean;
     iterateLeaves(cb: (leaf: WorkspaceLeaf) => boolean | void, root: WorkspaceItem): boolean;
-    /** "Undo close tab" history: WorkspaceLeaf.detach pushes an entry synchronously. */
-    pushUndoHistory(...args: unknown[]): void;
-    createLeafInParent(parent: WorkspaceSplit, index: number): WorkspaceLeaf;
-  }
-
-  interface WorkspaceSplit {
-    collapse(...args: unknown[]): void;
-    containerEl: HTMLElement;
-    insertChild(index: number, child: WorkspaceItem, resize?: boolean): void;
+    /** "Undo close tab" history: WorkspaceLeaf.detach pushes an entry synchronously (not for empty leaves). */
+    pushUndoHistory(leaf: WorkspaceLeaf, parentId?: string, rootId?: string): void;
+    /**
+     * A new tab after the most recently active one in `parent` (default: the most recent leaf's group), or that
+     * tab itself when it's an empty one.
+     */
+    createLeafInTabGroup(parent?: WorkspaceTabs): WorkspaceLeaf;
   }
 
   interface WorkspaceLeaf {
     /** Set when the leaf is linked to others ("Link with tab"). */
     group?: string | null;
     history?: { serialize?(): unknown; deserialize?(state: unknown): void };
-    setPinned(pinned: boolean): void;
-    togglePinned(): void;
-    getContainer(): WorkspaceContainer;
+    /** Re-reads the view's icon and display text into the tab header. */
+    updateHeader?(): void;
   }
 }

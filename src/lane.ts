@@ -1,59 +1,160 @@
-import { ItemView, Keymap, Menu, Notice, TFile, WorkspaceLeaf, WorkspaceSplit, getLinkpath, setIcon } from "obsidian";
+import { App, Keymap, Menu, Notice, TFile, WorkspaceLeaf, WorkspaceSplit, getLinkpath, setIcon } from "obsidian";
 import type EditorLanesPlugin from "./main";
+import type { LanesView } from "./lanes-view";
 import { asEl } from "./dom";
 import { DropEffect, clampIn, linkpathsInText, pickDropEffect } from "./dnd";
 import { noteNameError, tidyName } from "./names";
-import { AddOpts, Item, ItemData, LAZY_MARGIN, LaneDir, Taken, VIEW_TYPE } from "./types";
+import { accordionCollapse, insertIndex, overExpanded, overLimit } from "./tidy";
+import { AddOpts, Item, ItemData, Taken, stamp } from "./types";
 
 let srHintSeq = 0;
 
-export class LaneView extends ItemView {
+/**
+ * One lane of a lanes tab: a column (or a stacked row) holding a scrollable list of note cards, newest on top,
+ * each a real Obsidian editor in a hosted WorkspaceLeaf (see the comment at the top of main.ts). Not a leaf or
+ * a view itself: the tab (LanesView) builds its lanes from its layout, places their elements in its grid and
+ * saves their notes in its view state.
+ */
+export class Lane {
   items: Item[] = [];
-  private listEl!: HTMLElement;
-  private emptyEl!: HTMLElement;
+  /** The lane's element: a small header, then the list of cards. The tab moves it when its layout changes. */
+  readonly el: HTMLElement;
+  private labelEl: HTMLElement;
+  private actionsEl: HTMLElement;
+  private listEl: HTMLElement;
+  private emptyEl: HTMLElement;
   private observer: IntersectionObserver | null = null;
+  private observerMargin = -1; // the pre-load distance the observer was built with
+  private observerWin: Window | null = null; // and the window (a tab moved to a popout needs a new one)
   private lazyQueue: Item[] = [];
   private draining = false;
 
   constructor(
-    leaf: WorkspaceLeaf,
+    readonly tab: LanesView,
     private plugin: EditorLanesPlugin,
   ) {
-    super(leaf);
-    this.navigation = false;
-  }
-
-  getViewType() {
-    return VIEW_TYPE;
-  }
-  getDisplayText() {
-    return "Editor lane";
-  }
-  override getIcon() {
-    return "columns-3";
-  }
-
-  override async onOpen() {
-    // header buttons (view actions are shown right-to-left, so add them in reverse)
-    this.addAction("arrow-down", "New editor lane below", () => void this.plugin.newLaneAt(this, "down"));
-    this.addAction("arrow-up", "New editor lane above", () => void this.plugin.newLaneAt(this, "up"));
-    this.addAction("arrow-right", "New editor lane to the right", () => void this.plugin.newLaneAt(this, "right"));
-    this.addAction("arrow-left", "New editor lane to the left", () => void this.plugin.newLaneAt(this, "left"));
-    const root = this.contentEl;
-    root.empty();
-    root.addClass("lane-view");
+    // made in the tab's own window (main or popout), like everything an IntersectionObserver watches
+    const root = (this.el = tab.contentEl.createDiv({ cls: "lane" }));
     root.addEventListener("mousedown", () => this.plugin.notePointerIn(this), { capture: true });
-
-    this.listEl = root.createDiv({ cls: "lane-list" });
+    const headerEl = root.createDiv({ cls: "lane-header" });
+    this.labelEl = headerEl.createSpan({ cls: "lane-label" });
+    this.actionsEl = headerEl.createDiv({ cls: "lane-actions" });
     this.emptyEl = root.createDiv({
       cls: "lane-empty",
       text: "Open a note, Shift-click a link, or drag a note or link here.",
     });
+    this.listEl = root.createDiv({ cls: "lane-list" });
     this.updateEmpty();
+    this.setupDrop(root);
+    // Right-click on the lane's background (not a card): the lane's menu, as in its header's ⋯ button
+    root.addEventListener("contextmenu", e => {
+      if (asEl(e.target)?.closest(".lane-item")) return;
+      e.preventDefault();
+      const menu = new Menu();
+      this.tab.addLaneMenuItems(menu, this);
+      menu.showAtMouseEvent(e);
+    });
+    this.applySettings();
+  }
 
-    // expanded notes restored from a layout (or "Expand all") mount once they're scrolled near view
+  private get app(): App {
+    return this.plugin.app;
+  }
+
+  private save() {
+    this.tab.save();
+  }
+
+  /** The header: "Lane n" (its note count as a tooltip), the buttons the tab passes (none while locked) and ⋯. */
+  renderHeader(n: number, buttons: { icon: string; title: string; run: () => void }[]) {
+    this.labelEl.setText(`Lane ${n}`);
+    this.labelEl.setAttr("title", `${this.items.length} note${this.items.length === 1 ? "" : "s"}`);
+    this.actionsEl.empty();
+    const add = (icon: string, title: string, run: (e: MouseEvent) => void) => {
+      const b = this.actionsEl.createEl("button", { cls: "lane-action clickable-icon", attr: { "aria-label": title } });
+      setIcon(b, icon);
+      b.addEventListener("click", e => {
+        e.stopPropagation();
+        run(e);
+      });
+    };
+    for (const b of buttons) add(b.icon, b.title, () => b.run());
+    add("more-horizontal", "Lane menu", e => {
+      const menu = new Menu();
+      this.tab.addLaneMenuItems(menu, this);
+      menu.showAtMouseEvent(e);
+    });
+  }
+
+  /** What a lane shows and how it loads, from the settings; called when made and whenever settings change. */
+  applySettings() {
+    for (const it of this.items) this.updateTitle(it);
+    if (this.observerMargin !== this.plugin.settings.preloadDistance || this.observerWin !== this.el.win) {
+      this.buildObserver();
+    }
+  }
+
+  /** The tab moved to another window: lazy mounting needs an observer from that window. */
+  checkWindow() {
+    if (this.observerWin !== this.el.win) this.buildObserver();
+  }
+
+  /** Detach every hosted leaf and stop observing. Safe to call twice. */
+  destroy() {
+    for (const it of this.items) this.unmount(it);
+    this.items = [];
+    this.lazyQueue = [];
+    this.listEl.empty();
+    this.observer?.disconnect();
+    this.observer = null;
+    this.observerMargin = -1;
+    if (this.plugin.lastLane === this) this.plugin.lastLane = null;
+  }
+
+  // ---------- persistence (the tab's view state) ----------
+
+  getState(): ItemData[] {
+    return this.items.map(i => ({ path: i.file.path, collapsed: i.collapsed, pinned: i.pinned, openedAt: i.openedAt }));
+  }
+
+  /** Cards from a saved state (an empty lane only). Notes that no longer exist are skipped. */
+  load(list: readonly ItemData[]) {
+    if (this.items.length) return;
+    list.forEach((d, n) => {
+      const f = this.app.vault.getAbstractFileByPath(d.path);
+      if (!(f instanceof TFile) || this.items.some(i => i.file === f)) return;
+      // no stamp saved: the top note counts as the most recently opened
+      const it = this.createItem(f, d.collapsed, !!d.pinned, d.openedAt ?? list.length - n);
+      this.place(it, this.items.length); // pinned ones end up first
+      if (!it.collapsed) this.mountLazily(it);
+    });
+    this.updateEmpty();
+  }
+
+  /** The vault changed: a deleted note's card closes, a renamed one's title follows. */
+  onFileDeleted(f: unknown) {
+    for (const it of this.items.filter(i => i.file === f)) this.close(it);
+  }
+  onFileRenamed(f: unknown) {
+    const it = this.items.find(i => i.file === f);
+    if (!it) return;
+    this.updateTitle(it);
+    this.save();
+  }
+
+  /**
+   * Expanded notes restored from a layout (or "Expand all") mount once they're scrolled within the pre-load
+   * distance. IntersectionObserver's rootMargin is fixed at construction, so a new distance needs a new one;
+   * every expanded note that hasn't mounted yet is observed again.
+   */
+  private buildObserver() {
+    this.observer?.disconnect();
+    this.observer = null;
+    const margin = this.plugin.settings.preloadDistance;
+    this.observerMargin = margin;
+    this.observerWin = this.el.win;
     try {
-      const IO: typeof IntersectionObserver = (root as any).win?.IntersectionObserver ?? IntersectionObserver;
+      const IO: typeof IntersectionObserver = (this.el.win as any)?.IntersectionObserver ?? IntersectionObserver;
       this.observer = new IO(
         entries => {
           for (const en of entries) {
@@ -63,134 +164,38 @@ export class LaneView extends ItemView {
           }
           void this.drainLazy();
         },
-        { root: this.listEl, rootMargin: `${LAZY_MARGIN}px 0px` },
+        { root: this.listEl, rootMargin: `${margin}px 0px` },
       );
     } catch {
       this.observer = null;
     }
-
-    this.setupDrop(root);
-
-    this.registerEvent(
-      this.app.vault.on("delete", f => {
-        const it = this.items.find(i => i.file === f);
-        if (it) this.close(it);
-      }),
-    );
-    this.registerEvent(
-      this.app.vault.on("rename", f => {
-        const it = this.items.find(i => i.file === f);
-        if (it) {
-          this.updateTitle(it);
-          this.save();
-        }
-      }),
-    );
-  }
-
-  /** The lane's actions live in Obsidian's own "More options" (⋯) menu at the right of the lane header. */
-  override onPaneMenu(menu: Menu, source: string) {
-    const dirs: [LaneDir, string, string][] = [
-      ["left", "New editor lane to the left", "arrow-left"],
-      ["right", "New editor lane to the right", "arrow-right"],
-      ["up", "New editor lane above", "arrow-up"],
-      ["down", "New editor lane below", "arrow-down"],
-    ];
-    for (const [d, title, icon] of dirs) {
-      menu.addItem(i =>
-        i
-          .setSection("pane")
-          .setTitle(title)
-          .setIcon(icon)
-          .onClick(() => void this.plugin.newLaneAt(this, d)),
-      );
-    }
-    menu.addItem(i =>
-      i
-        .setSection("pane")
-        .setTitle("Collapse all notes")
-        .setIcon("chevrons-down-up")
-        .setDisabled(!this.items.length)
-        .onClick(() => this.setAllCollapsed(true)),
-    );
-    menu.addItem(i =>
-      i
-        .setSection("pane")
-        .setTitle("Expand all notes")
-        .setIcon("chevrons-up-down")
-        .setDisabled(!this.items.length)
-        .onClick(() => this.setAllCollapsed(false)),
-    );
-    menu.addItem(i =>
-      i
-        .setSection("pane")
-        .setTitle("Close all notes")
-        .setIcon("x-circle")
-        .setDisabled(!this.items.length)
-        .onClick(() => this.closeAll()),
-    );
-    // No super.onPaneMenu: ItemView's adds Obsidian's "Split right" / "Split down" (plus phone-only items, and
-    // this plugin is desktop-only). The lane buttons above replace them.
-  }
-
-  override async onClose() {
-    this.teardown();
-    this.observer?.disconnect();
-    this.observer = null;
-    if (this.plugin.lastLane === this) this.plugin.lastLane = null;
-  }
-
-  /** Detach every hosted leaf. Safe to call twice. */
-  teardown() {
-    for (const it of this.items) this.unmount(it);
-    this.items = [];
-    this.lazyQueue = [];
-    this.listEl?.empty();
-  }
-
-  // ---------- persistence (workspace.json, via the view state) ----------
-
-  override getState(): Record<string, unknown> {
-    const items: ItemData[] = this.items.map(i => ({ path: i.file.path, collapsed: i.collapsed, pinned: i.pinned }));
-    return { items };
-  }
-
-  override async setState(state: any, result: any) {
-    const list: ItemData[] = Array.isArray(state?.items) ? state.items : [];
-    if (!this.items.length && list.length) {
-      for (const d of list) {
-        const f = this.app.vault.getAbstractFileByPath(String(d?.path ?? ""));
-        if (!(f instanceof TFile) || this.items.some(i => i.file === f)) continue;
-        const it = this.createItem(f, !!d.collapsed, !!d?.pinned);
-        this.place(it, this.items.length); // pinned ones end up first
-        if (!it.collapsed) this.mountLazily(it);
-      }
-      this.updateEmpty();
-    }
-    await super.setState(state, result);
-  }
-
-  private save() {
-    this.app.workspace.requestSaveLayout();
+    for (const it of this.items) if (!it.collapsed && !it.leaf) this.mountLazily(it);
   }
 
   // ---------- items ----------
 
   /**
-   * Add a note at the top, below any pinned notes (or at `opts.index`), and expand it. A note already in this
-   * lane moves there instead; a pinned one keeps its place.
+   * Add a note where "New notes go" says (by default the top, below any pinned notes), or at `opts.index`, and
+   * expand it. A note already in this lane moves there instead; a pinned one keeps its place. Then the
+   * "Keeping lanes tidy" rules run, never touching this note.
    */
   async add(file: TFile, opts: AddOpts = {}) {
     this.plugin.lastLane = this;
     let it = this.items.find(i => i.file === file);
     const isNew = !it;
     if (!it) it = this.createItem(file, false);
+    it.openedAt = stamp();
     const cur = this.items.indexOf(it);
     if (opts.index !== undefined) this.placeAt(it, cur >= 0 && cur < opts.index ? opts.index - 1 : opts.index);
-    else if (!it.pinned || cur < 0) this.place(it, 0);
+    else if (!it.pinned || cur < 0) {
+      const others = this.items.filter(i => i !== it);
+      this.place(it, insertIndex(others, this.plugin.settings.newNotePosition, opts.after));
+    }
     this.updateEmpty();
     if (!it.leaf && opts.mode) it.pending = { ...it.pending, mode: opts.mode };
+    if (isNew) this.closeOverLimit(it);
     await this.setCollapsed(it, false);
+    this.afterExpand(it);
     if (opts.index === undefined) this.scrollToItem(it);
     const leaf: any = it.leaf;
     if (leaf) {
@@ -212,7 +217,7 @@ export class LaneView extends ItemView {
     this.save();
   }
 
-  private createItem(file: TFile, collapsed: boolean, pinned = false): Item {
+  private createItem(file: TFile, collapsed: boolean, pinned = false, openedAt = stamp()): Item {
     const el = createDiv({ cls: "lane-item" });
     const header = el.createDiv({ cls: "lane-item-header" });
     const chevEl = header.createEl("button", { cls: "lane-chevron" });
@@ -233,8 +238,8 @@ export class LaneView extends ItemView {
       file,
       collapsed,
       pinned,
+      openedAt,
       el,
-      headerEl: header,
       pinEl,
       chevEl,
       titleEl,
@@ -266,7 +271,7 @@ export class LaneView extends ItemView {
       }
       this.plugin.dragItem = { lane: this, item: it };
       el.addClass("is-lane-dragging");
-      const dm = (this.app as any).dragManager;
+      const dm = this.app.dragManager;
       try {
         dm?.onDragStart?.(e, dm.dragFile(e, it.file, "editor-lanes"));
       } catch {
@@ -284,18 +289,23 @@ export class LaneView extends ItemView {
     // header click (or the chevron button, which also takes Enter / Space) toggles the note
     header.addEventListener("click", e => {
       if ((e.target as HTMLElement).closest(".lane-item-title, .lane-close, .lane-pin")) return;
-      void this.setCollapsed(it, !it.collapsed).then(() => this.save());
+      const expanding = it.collapsed;
+      if (expanding) it.openedAt = stamp();
+      void this.setCollapsed(it, !it.collapsed).then(() => {
+        if (expanding) this.afterExpand(it);
+        this.save();
+      });
     });
     // an expanded note that hasn't mounted yet (see mountLazily): clicking its placeholder mounts it
     bodyEl.addEventListener("pointerdown", () => {
       if (!it.collapsed && !it.leaf) void this.mount(it);
     });
     // title: edit it to rename the note, like Obsidian's inline title. Ctrl/Cmd-click opens the note instead
-    // (a new lane; with lanes only off, a new tab).
+    // (a new lanes tab; with lanes only off, a new tab).
     titleEl.addEventListener("mousedown", e => {
       if (!Keymap.isModEvent(e)) return;
       e.preventDefault();
-      if (this.plugin.settings.lanesOnly) void this.plugin.openInLane(it.file, "new", this, { focus: true });
+      if (this.plugin.settings.lanesOnly) void this.plugin.openInLane(it.file, "newTab", this, { focus: true });
       else void this.app.workspace.getLeaf("tab").openFile(it.file);
     });
     titleEl.addEventListener("focus", () => {
@@ -345,9 +355,9 @@ export class LaneView extends ItemView {
       );
       menu.addItem(i =>
         i
-          .setTitle("Open in new editor lane")
+          .setTitle("Open in new lanes tab")
           .setIcon("columns-3")
-          .onClick(() => void this.plugin.openInLane(it.file, "new", this, { focus: true })),
+          .onClick(() => void this.plugin.openInLane(it.file, "newTab", this, { focus: true })),
       );
       menu.addItem(i =>
         i
@@ -450,7 +460,8 @@ export class LaneView extends ItemView {
   private updateTitle(it: Item) {
     // the folder prefix is drawn right-to-left (so a long one is cut from the left); the LRM keeps the
     // trailing "/" on the right of it
-    const folder = it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/\u200E" : "";
+    const showFolder = this.plugin.settings.showFolder;
+    const folder = showFolder && it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/\u200E" : "";
     it.pathEl.setText(folder);
     it.pathEl.setAttr("title", it.file.path);
     if (it.titleEl.doc.activeElement === it.titleEl) return; // don't overwrite a name being edited
@@ -483,6 +494,34 @@ export class LaneView extends ItemView {
       }
     }
     this.save();
+  }
+
+  /** "Accordion mode" / "Auto-collapse after N expanded", after `it` was opened or expanded. */
+  private afterExpand(it: Item) {
+    const s = this.plugin.settings;
+    const extra = s.accordion ? accordionCollapse(this.items, it) : overExpanded(this.items, s.autoCollapseAfter, it);
+    for (const o of extra) void this.setCollapsed(o, true);
+    if (extra.length) this.save();
+  }
+
+  /** "Maximum notes per lane": close the least recently opened unpinned notes beyond it, never `keep`. */
+  private closeOverLimit(keep: Item) {
+    for (const o of overLimit(this.items, this.plugin.settings.maxNotesPerLane, keep)) this.close(o);
+  }
+
+  /** "Note already open in another lane: jump to it": show, expand and focus this lane's card. */
+  async reveal(it: Item) {
+    this.plugin.lastLane = this;
+    await this.app.workspace.revealLeaf(this.tab.leaf);
+    if (it.collapsed) {
+      it.openedAt = stamp();
+      await this.setCollapsed(it, false);
+      this.afterExpand(it);
+      this.save();
+    }
+    this.scrollToItem(it);
+    if (it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
+    else it.titleEl.focus();
   }
 
   close(it: Item) {
@@ -541,12 +580,15 @@ export class LaneView extends ItemView {
     this.items.remove(it);
     this.updateEmpty();
     this.save();
-    return { file: it.file, collapsed: it.collapsed, pinned: it.pinned, pending: it.pending };
+    return { file: it.file, collapsed: it.collapsed, pinned: it.pinned, pending: it.pending, openedAt: it.openedAt };
   }
 
-  /** A card moved here from another lane. If this lane already has the note, that card moves instead. */
-  async insertTaken(d: Taken, index: number) {
-    this.plugin.lastLane = this;
+  /**
+   * A card moved here from another lane. If this lane already has the note, that card moves instead.
+   * `focus`: make it the active note (a user's move; not when a layout change merges lanes).
+   */
+  async insertTaken(d: Taken, index: number, focus = true) {
+    if (focus) this.plugin.lastLane = this;
     let it = this.items.find(i => i.file === d.file);
     if (it) {
       const cur = this.items.indexOf(it);
@@ -557,18 +599,27 @@ export class LaneView extends ItemView {
       this.place(it, cur < index ? index - 1 : index);
       if (!d.collapsed && it.collapsed) await this.setCollapsed(it, false);
     } else {
-      it = this.createItem(d.file, d.collapsed, d.pinned);
+      it = this.createItem(d.file, d.collapsed, d.pinned, d.openedAt);
       it.pending = d.pending;
       this.place(it, index);
-      if (!it.collapsed) await this.mount(it);
+      if (focus) this.closeOverLimit(it);
+      if (!it.collapsed) {
+        if (focus) await this.mount(it);
+        else this.mountLazily(it);
+      }
     }
     this.updateEmpty();
+    if (focus && !it.collapsed) {
+      it.openedAt = stamp();
+      this.afterExpand(it);
+    }
     this.save();
-    if (!it.collapsed && it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
+    if (focus && !it.collapsed && it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
   }
 
   private updateEmpty() {
-    this.emptyEl?.toggleClass("lane-hidden", this.items.length > 0);
+    this.tab.laneChanged(this);
+    this.emptyEl.toggleClass("lane-hidden", this.items.length > 0);
   }
 
   // ---------- hosted editors ----------
@@ -600,7 +651,8 @@ export class LaneView extends ItemView {
   private nearView(el: HTMLElement): boolean {
     const r = el.getBoundingClientRect();
     const v = this.listEl.getBoundingClientRect();
-    return v.height > 0 && r.top < v.bottom + LAZY_MARGIN && r.bottom > v.top - LAZY_MARGIN;
+    const m = this.plugin.settings.preloadDistance;
+    return v.height > 0 && r.top < v.bottom + m && r.bottom > v.top - m;
   }
 
   /** Create the item's private split + leaf and open the note in it. */
@@ -652,8 +704,8 @@ export class LaneView extends ItemView {
       if (it.leaf === leaf && !leaf.__laneUnmounting) this.close(it);
       else origDetach();
     };
-    // the lane's window (main or popout), so focusing the note doesn't raise the main window
-    leaf.getContainer = () => this.leaf.getContainer();
+    // the tab's window (main or popout), so focusing the note doesn't raise the main window
+    leaf.getContainer = () => this.tab.leaf.getContainer();
     // `rename` would act on the (hidden) inline title: edit the card title instead
     const origSetEState = leaf.setEphemeralState.bind(leaf);
     leaf.setEphemeralState = (e: any) => {
@@ -713,11 +765,38 @@ export class LaneView extends ItemView {
    * A card dragged by its header (capture phase, so it moves even when dropped on a note's editor, which
    * would otherwise insert a link) and notes / links dragged from anywhere else: the explorer, tabs, search,
    * links in Reading view, a selected [[link]] or obsidian:// URL. Those open at the drop point, unless
-   * they're dropped on a note's body: there the editor takes them as usual (a link inserted into the note).
+   * they're dropped on a note's body: there the editor takes them as usual (a link inserted into the note),
+   * or, with "Dropping a note or link onto a note's text: open it in the lane", the lane takes them in the
+   * capture phase too. Only drags Obsidian's drag manager knows (files, links) are taken over a body: a plain
+   * text drag there still moves text between notes.
    */
   private setupDrop(root: HTMLElement) {
-    const dm = () => (this.app as any).dragManager;
+    const dm = () => this.app.dragManager;
     const inBody = (t: EventTarget | null) => !!asEl(t)?.closest(".lane-item-body");
+    const takeOverBody = (e: DragEvent) =>
+      this.plugin.settings.dropOnText === "open" && inBody(e.target) && this.dropFiles(e, true).length > 0;
+    const onBody = (e: DragEvent) => {
+      if (this.plugin.dragItem || !takeOverBody(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDropEffect(e, ["link", "copy", "move"]);
+      this.showDrop(this.dropIndex(e.clientY), false);
+      dm()?.setAction?.("Open in this lane");
+    };
+    root.addEventListener("dragenter", onBody, { capture: true });
+    root.addEventListener("dragover", onBody, { capture: true });
+    root.addEventListener(
+      "drop",
+      e => {
+        if (this.plugin.dragItem || !takeOverBody(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const index = this.dropIndex(e.clientY);
+        this.clearDrop();
+        void this.addDropped(this.dropFiles(e, true), index);
+      },
+      { capture: true },
+    );
     const onCard = (e: DragEvent) => {
       const d = this.plugin.dragItem;
       if (!d) return;
@@ -766,14 +845,17 @@ export class LaneView extends ItemView {
       if (!files.length) return;
       e.preventDefault();
       e.stopPropagation();
-      void (async () => {
-        let i = index;
-        for (const f of files) {
-          await this.add(f, { index: i });
-          i = this.items.findIndex(x => x.file === f) + 1;
-        }
-      })();
+      void this.addDropped(files, index);
     });
+  }
+
+  /** Dropped notes open in order from `index`. */
+  private async addDropped(files: TFile[], index: number) {
+    let i = index;
+    for (const f of files) {
+      await this.add(f, { index: i });
+      i = this.items.findIndex(x => x.file === f) + 1;
+    }
   }
 
   /** Where a drop at `y` goes: before the first card whose middle is below it (`skip`: the card being moved). */
@@ -789,7 +871,7 @@ export class LaneView extends ItemView {
   /** Outline the lane and draw a line where the drop will land. */
   private showDrop(index: number, pinned: boolean, skip?: Item) {
     this.clearDrop();
-    this.contentEl.addClass("is-drop-target");
+    this.el.addClass("is-drop-target");
     const list = this.items.filter(i => i !== skip);
     if (!list.length) return;
     const i = clampIn(list, pinned, index);
@@ -798,7 +880,7 @@ export class LaneView extends ItemView {
   }
 
   clearDrop() {
-    this.contentEl.removeClass("is-drop-target");
+    this.el.removeClass("is-drop-target");
     for (const it of this.items) it.el.removeClass("lane-drop-before", "lane-drop-after");
   }
 
@@ -808,7 +890,7 @@ export class LaneView extends ItemView {
     const add = (f: unknown) => {
       if (f instanceof TFile && f.extension === "md" && !out.includes(f)) out.push(f);
     };
-    const d = (this.app as any).dragManager?.draggable;
+    const d = this.app.dragManager?.draggable;
     if (d) {
       if (d.type === "file") add(d.file);
       else if (d.type === "files") (d.files ?? []).forEach(add);
