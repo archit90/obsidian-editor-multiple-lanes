@@ -704,11 +704,15 @@ export class Lane {
   }
 
   /** Read the mounted editor's mode back (it can also change by command / hotkey); saves if it changed. */
-  syncView(it: Item) {
+  syncView(it: Item, mounting = false) {
     if (it.leaf) {
       this.plugin.adoptCardView(it.leaf.view); // see main.ts patchCardScrolling
       const view = readView(it.leaf.getViewState().state);
-      if (JSON.stringify(view) !== JSON.stringify(it.view)) {
+      const json = JSON.stringify(view);
+      // a note without a mode of its own opens in the vault default: that isn't its own mode yet (tweak 40)
+      if (mounting && it.view === null) it.mountedView = json;
+      const followsDefault = it.view === null && it.mountedView === json;
+      if (!followsDefault && json !== JSON.stringify(it.view)) {
         it.view = view;
         this.save();
       }
@@ -723,6 +727,8 @@ export class Lane {
 
   private updateModeButton(it: Item) {
     const m: ViewMode = modeOfState(this.viewOf(it), this.modeDefaults());
+    if (it.shownMode === m) return; // layout-change calls this for every card: touch the DOM only on a change
+    it.shownMode = m;
     const reading = m === "reading";
     setIcon(it.modeEl, reading ? "edit-3" : "book-open");
     it.modeEl.setAttr(
@@ -895,7 +901,7 @@ export class Lane {
         state: mountViewState(pending),
         eState: pending?.eState,
       });
-      this.syncView(it);
+      this.syncView(it, true);
     } catch (e) {
       console.error("[editor-lanes] could not open", it.file.path, e);
       it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
@@ -1042,16 +1048,29 @@ export class Lane {
 
   /** Outline the lane and draw a line where the drop will land. */
   private showDrop(index: number, pinned: boolean, skip?: Item) {
+    const list = this.items.filter(i => i !== skip);
+    let mark: { el: HTMLElement; cls: string } | null = null;
+    if (list.length) {
+      const i = clampIn(list, pinned, index);
+      mark =
+        i < list.length
+          ? { el: list[i].el, cls: "lane-drop-before" }
+          : { el: list[list.length - 1].el, cls: "lane-drop-after" };
+    }
+    // dragover fires every few ms: change classes only when the drop spot moves (each change costs a layout)
+    if (this.el.hasClass("is-drop-target") && this.dropMark?.el === mark?.el && this.dropMark?.cls === mark?.cls)
+      return;
     this.clearDrop();
     this.el.addClass("is-drop-target");
-    const list = this.items.filter(i => i !== skip);
-    if (!list.length) return;
-    const i = clampIn(list, pinned, index);
-    if (i < list.length) list[i].el.addClass("lane-drop-before");
-    else list[list.length - 1].el.addClass("lane-drop-after");
+    this.dropMark = mark;
+    mark?.el.addClass(mark.cls);
   }
 
+  /** The card that shows the drop line, and on which side. */
+  private dropMark: { el: HTMLElement; cls: string } | null = null;
+
   clearDrop() {
+    this.dropMark = null;
     this.el.removeClass("is-drop-target");
     for (const it of this.items) it.el.removeClass("lane-drop-before", "lane-drop-after");
   }

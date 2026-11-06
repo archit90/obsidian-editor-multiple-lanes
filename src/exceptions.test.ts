@@ -43,3 +43,12 @@ describe("compileExceptions", () => {
     expect(compileExceptions("a+b.md")("aab.md")).toBe(false);
   });
 });
+
+describe("note names with dots (review EL-15)", () => {
+  it("matches a name or path whose last part looks like an extension", () => {
+    const m = compileExceptions("notes/v1.2\nMeeting 2026.11.06");
+    expect(m("notes/v1.2.md")).toBe(true);
+    expect(m("x/Meeting 2026.11.06.md")).toBe(true);
+    expect(m("notes/v1.3.md")).toBe(false);
+  });
+});

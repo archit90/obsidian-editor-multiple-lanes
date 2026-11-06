@@ -65,6 +65,10 @@ export interface Item {
   pending: MountState | null; // applied on the next mount
   editStart: string | null; // title text when editing started
   cancelEdit: boolean; // Escape: the next blur must not rename
+  /** For a note following the vault default: the mode it mounted with (not saved; a change from it is). */
+  mountedView?: string;
+  /** The mode button's last state, so it's only redrawn when the mode changes. */
+  shownMode?: string;
 }
 
 /** Where an open goes: the last-used lane, the next lane of the source tab, a new lanes tab, or the source lane. */

@@ -1,4 +1,5 @@
 import {
+  Component,
   MarkdownEditMode,
   MarkdownView,
   Menu,
@@ -174,6 +175,10 @@ export default class EditorLanesPlugin extends Plugin {
   private sweeping = false;
   private lastInput: Node | null = null; // target of the last mousedown / keydown in any window
   private windowDocs = new WeakSet<Document>();
+  /** Per popout window: its document listeners, unloaded when the window closes (so its DOM can be freed). */
+  private windowParts = new Map<Document, Component>();
+  private unloaded = false;
+  private sweepRetry = 0;
   private requestSweep = debounce(() => void this.sweepMainArea(false), 250, true);
   requestLegacyCleanup = debounce(() => void this.closeLegacy().then(() => this.closeOldNavigator()), 100, true);
   private noticeAt = 0;
@@ -319,6 +324,15 @@ export default class EditorLanesPlugin extends Plugin {
     // Mouse / keyboard handlers in every window (the main one and popouts)
     this.registerWindow(document);
     this.registerEvent(this.app.workspace.on("window-open", (_w, win) => this.registerWindow(win.document)));
+    this.registerEvent(
+      this.app.workspace.on("window-close", (_w, win) => {
+        const part = this.windowParts.get(win.document);
+        if (!part) return;
+        this.windowParts.delete(win.document);
+        this.windowDocs.delete(win.document);
+        this.removeChild(part);
+      }),
+    );
     // the most recently active lanes tab is where opens from outside any lanes tab go
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", leaf => {
@@ -355,6 +369,8 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   override onunload() {
+    this.unloaded = true;
+    window.clearTimeout(this.sweepRetry);
     this.requestSweep.cancel();
     this.requestLegacyCleanup.cancel();
     for (const tab of this.allTabs()) tab.teardown();
@@ -400,10 +416,13 @@ export default class EditorLanesPlugin extends Plugin {
   private registerWindow(doc: Document) {
     if (this.windowDocs.has(doc)) return;
     this.windowDocs.add(doc);
+    // the main window's listeners live as long as the plugin; a popout's go when it closes
+    const owner: Component = doc === document ? this : this.addChild(new Component());
+    if (owner !== this) this.windowParts.set(doc, owner);
     // Shift-click a link: capture phase, so we act before Obsidian or CodeMirror (which would extend the selection)
-    this.registerDomEvent(doc, "mousedown", e => this.onMouseDown(e), { capture: true });
+    owner.registerDomEvent(doc, "mousedown", e => this.onMouseDown(e), { capture: true });
     // touch: a tap's emulated mousedown can be skipped (a scroll, a long-press), pointerdown always comes
-    this.registerDomEvent(
+    owner.registerDomEvent(
       doc,
       "pointerdown",
       e => {
@@ -411,7 +430,7 @@ export default class EditorLanesPlugin extends Plugin {
       },
       { capture: true },
     );
-    this.registerDomEvent(
+    owner.registerDomEvent(
       doc,
       "keydown",
       e => {
@@ -419,7 +438,7 @@ export default class EditorLanesPlugin extends Plugin {
       },
       { capture: true },
     );
-    this.registerDomEvent(doc, "focusin", e => this.searchKeysFollowFocus(e), { capture: true });
+    owner.registerDomEvent(doc, "focusin", e => this.searchKeysFollowFocus(e), { capture: true });
     const swallow = (e: MouseEvent) => {
       const s = this.swallow;
       if (!s) return;
@@ -433,8 +452,8 @@ export default class EditorLanesPlugin extends Plugin {
       e.stopImmediatePropagation();
       if (e.type === "click") this.swallow = null;
     };
-    this.registerDomEvent(doc, "mouseup", swallow, { capture: true });
-    this.registerDomEvent(doc, "click", swallow, { capture: true });
+    owner.registerDomEvent(doc, "mouseup", swallow, { capture: true });
+    owner.registerDomEvent(doc, "click", swallow, { capture: true });
   }
 
   /**
@@ -488,7 +507,12 @@ export default class EditorLanesPlugin extends Plugin {
     } finally {
       this.sweeping = false;
     }
-    if (retry) window.setTimeout(() => this.requestSweep(), INTENT_MS);
+    if (retry && !this.unloaded) {
+      window.clearTimeout(this.sweepRetry);
+      this.sweepRetry = window.setTimeout(() => {
+        if (!this.unloaded) this.requestSweep();
+      }, INTENT_MS);
+    }
   }
 
   /** A tab's mode, scroll / cursor and history, for reopening its note in a lane. */

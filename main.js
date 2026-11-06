@@ -240,13 +240,16 @@ function compileOne(raw) {
   }
   const lower = p.toLowerCase();
   if (lower.endsWith("/")) return (path) => path.toLowerCase().startsWith(lower);
-  const withExt = /\.[a-z0-9]+$/i.test(lower) ? lower : `${lower}.md`;
+  const md = `${lower}.md`;
   if (!lower.includes("/")) {
-    return (path) => (path.split("/").pop() ?? path).toLowerCase() === withExt;
+    return (path) => {
+      const base = (path.split("/").pop() ?? path).toLowerCase();
+      return base === lower || base === md;
+    };
   }
   return (path) => {
     const l = path.toLowerCase();
-    return l === withExt || l === lower || l.startsWith(lower + "/");
+    return l === lower || l === md || l.startsWith(lower + "/");
   };
 }
 function compileExceptions(text) {
@@ -758,6 +761,8 @@ var Lane = class {
     /** Card header heights → `--lane-header-h` on each card (an open search bar sticks right below it). */
     this.headerObserver = null;
     this.draining = false;
+    /** The card that shows the drop line, and on which side. */
+    this.dropMark = null;
     const root = this.el = tab.contentEl.createDiv({ cls: "lane" });
     root.addEventListener("pointerdown", () => this.plugin.notePointerIn(this), { capture: true });
     this.emptyEl = root.createDiv({
@@ -1298,11 +1303,14 @@ var Lane = class {
     }
   }
   /** Read the mounted editor's mode back (it can also change by command / hotkey); saves if it changed. */
-  syncView(it) {
+  syncView(it, mounting = false) {
     if (it.leaf) {
       this.plugin.adoptCardView(it.leaf.view);
       const view = readView(it.leaf.getViewState().state);
-      if (JSON.stringify(view) !== JSON.stringify(it.view)) {
+      const json = JSON.stringify(view);
+      if (mounting && it.view === null) it.mountedView = json;
+      const followsDefault = it.view === null && it.mountedView === json;
+      if (!followsDefault && json !== JSON.stringify(it.view)) {
         it.view = view;
         this.save();
       }
@@ -1315,6 +1323,8 @@ var Lane = class {
   }
   updateModeButton(it) {
     const m = modeOfState(this.viewOf(it), this.modeDefaults());
+    if (it.shownMode === m) return;
+    it.shownMode = m;
     const reading = m === "reading";
     (0, import_obsidian2.setIcon)(it.modeEl, reading ? "edit-3" : "book-open");
     it.modeEl.setAttr(
@@ -1469,7 +1479,7 @@ var Lane = class {
         state: mountViewState(pending),
         eState: pending?.eState
       });
-      this.syncView(it);
+      this.syncView(it, true);
     } catch (e) {
       console.error("[editor-lanes] could not open", it.file.path, e);
       it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
@@ -1607,15 +1617,21 @@ var Lane = class {
   }
   /** Outline the lane and draw a line where the drop will land. */
   showDrop(index, pinned, skip) {
+    const list = this.items.filter((i) => i !== skip);
+    let mark = null;
+    if (list.length) {
+      const i = clampIn(list, pinned, index);
+      mark = i < list.length ? { el: list[i].el, cls: "lane-drop-before" } : { el: list[list.length - 1].el, cls: "lane-drop-after" };
+    }
+    if (this.el.hasClass("is-drop-target") && this.dropMark?.el === mark?.el && this.dropMark?.cls === mark?.cls)
+      return;
     this.clearDrop();
     this.el.addClass("is-drop-target");
-    const list = this.items.filter((i2) => i2 !== skip);
-    if (!list.length) return;
-    const i = clampIn(list, pinned, index);
-    if (i < list.length) list[i].el.addClass("lane-drop-before");
-    else list[list.length - 1].el.addClass("lane-drop-after");
+    this.dropMark = mark;
+    mark?.el.addClass(mark.cls);
   }
   clearDrop() {
+    this.dropMark = null;
     this.el.removeClass("is-drop-target");
     for (const it of this.items) it.el.removeClass("lane-drop-before", "lane-drop-after");
   }
@@ -2311,7 +2327,8 @@ var LanesSettingTab = class extends import_obsidian7.PluginSettingTab {
       t.inputEl.addClass("lane-setting-textarea");
       t.setPlaceholder("Templates/\n*.excalidraw.md");
       t.setValue(this.s.routeExceptions);
-      t.onChange((v) => this.set("routeExceptions", v, "routing"));
+      t.onChange((v) => this.set("routeExceptions", v, "none"));
+      t.inputEl.addEventListener("blur", () => void this.plugin.settingsChanged("routing"));
     });
     new import_obsidian7.Setting(el).setName("Lane layout").setHeading();
     this.layoutSection(el);
@@ -2320,7 +2337,7 @@ var LanesSettingTab = class extends import_obsidian7.PluginSettingTab {
       el,
       "accordion",
       "Accordion mode",
-      "Opening or expanding a note collapses the other notes in its lane, except pinned ones.",
+      "Opening or expanding a note collapses the other notes in its lane, except pinned ones. A collapsed note's undo history is cleared.",
       "none"
     );
     this.number(
@@ -2334,7 +2351,7 @@ var LanesSettingTab = class extends import_obsidian7.PluginSettingTab {
       el,
       "autoCollapseAfter",
       "Auto-collapse after this many expanded",
-      "With more notes expanded than this, the least recently opened ones (not pinned) collapse. 0 = off",
+      "With more notes expanded than this, the least recently opened ones (not pinned) collapse, which clears their undo history. 0 = off",
       "none"
     );
     new import_obsidian7.Setting(el).setName("Looks").setHeading();
@@ -2417,6 +2434,7 @@ var LanesSettingTab = class extends import_obsidian7.PluginSettingTab {
         t.inputEl.setAttr("aria-invalid", String(!ok));
         if (!ok) return;
         this.s.defaultLayout = v;
+        if (/[,;]\s*$/.test(v)) return void await this.plugin.saveSettings();
         await this.plugin.saveSettings();
         applySoon();
       });
@@ -2455,6 +2473,10 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     this.lastInput = null;
     // target of the last mousedown / keydown in any window
     this.windowDocs = /* @__PURE__ */ new WeakSet();
+    /** Per popout window: its document listeners, unloaded when the window closes (so its DOM can be freed). */
+    this.windowParts = /* @__PURE__ */ new Map();
+    this.unloaded = false;
+    this.sweepRetry = 0;
     this.requestSweep = (0, import_obsidian8.debounce)(() => void this.sweepMainArea(false), 250, true);
     this.requestLegacyCleanup = (0, import_obsidian8.debounce)(() => void this.closeLegacy().then(() => this.closeOldNavigator()), 100, true);
     this.noticeAt = 0;
@@ -2582,6 +2604,15 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     this.registerWindow(document);
     this.registerEvent(this.app.workspace.on("window-open", (_w, win) => this.registerWindow(win.document)));
     this.registerEvent(
+      this.app.workspace.on("window-close", (_w, win) => {
+        const part = this.windowParts.get(win.document);
+        if (!part) return;
+        this.windowParts.delete(win.document);
+        this.windowDocs.delete(win.document);
+        this.removeChild(part);
+      })
+    );
+    this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         const tab = this.tabOf(leaf);
         if (tab) this.touchTab(tab);
@@ -2609,6 +2640,8 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     });
   }
   onunload() {
+    this.unloaded = true;
+    window.clearTimeout(this.sweepRetry);
     this.requestSweep.cancel();
     this.requestLegacyCleanup.cancel();
     for (const tab of this.allTabs()) tab.teardown();
@@ -2645,8 +2678,10 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
   registerWindow(doc) {
     if (this.windowDocs.has(doc)) return;
     this.windowDocs.add(doc);
-    this.registerDomEvent(doc, "mousedown", (e) => this.onMouseDown(e), { capture: true });
-    this.registerDomEvent(
+    const owner = doc === document ? this : this.addChild(new import_obsidian8.Component());
+    if (owner !== this) this.windowParts.set(doc, owner);
+    owner.registerDomEvent(doc, "mousedown", (e) => this.onMouseDown(e), { capture: true });
+    owner.registerDomEvent(
       doc,
       "pointerdown",
       (e) => {
@@ -2654,7 +2689,7 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
       },
       { capture: true }
     );
-    this.registerDomEvent(
+    owner.registerDomEvent(
       doc,
       "keydown",
       (e) => {
@@ -2662,7 +2697,7 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
       },
       { capture: true }
     );
-    this.registerDomEvent(doc, "focusin", (e) => this.searchKeysFollowFocus(e), { capture: true });
+    owner.registerDomEvent(doc, "focusin", (e) => this.searchKeysFollowFocus(e), { capture: true });
     const swallow = (e) => {
       const s = this.swallow;
       if (!s) return;
@@ -2676,8 +2711,8 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
       e.stopImmediatePropagation();
       if (e.type === "click") this.swallow = null;
     };
-    this.registerDomEvent(doc, "mouseup", swallow, { capture: true });
-    this.registerDomEvent(doc, "click", swallow, { capture: true });
+    owner.registerDomEvent(doc, "mouseup", swallow, { capture: true });
+    owner.registerDomEvent(doc, "click", swallow, { capture: true });
   }
   /**
    * Lanes only, in every window: each empty main-area tab becomes a lanes tab; each Markdown tab moves into the
@@ -2730,7 +2765,12 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     } finally {
       this.sweeping = false;
     }
-    if (retry) window.setTimeout(() => this.requestSweep(), INTENT_MS);
+    if (retry && !this.unloaded) {
+      window.clearTimeout(this.sweepRetry);
+      this.sweepRetry = window.setTimeout(() => {
+        if (!this.unloaded) this.requestSweep();
+      }, INTENT_MS);
+    }
   }
   /** A tab's mode, scroll / cursor and history, for reopening its note in a lane. */
   tabState(leaf) {

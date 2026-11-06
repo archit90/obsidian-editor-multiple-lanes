@@ -38,13 +38,17 @@ function compileOne(raw: string): Matcher | null {
   }
   const lower = p.toLowerCase();
   if (lower.endsWith("/")) return path => path.toLowerCase().startsWith(lower);
-  const withExt = /\.[a-z0-9]+$/i.test(lower) ? lower : `${lower}.md`;
+  // "v1.2" or "Meeting 2026.11.06" is a note name, not a file extension: match with and without ".md"
+  const md = `${lower}.md`;
   if (!lower.includes("/")) {
-    return path => (path.split("/").pop() ?? path).toLowerCase() === withExt;
+    return path => {
+      const base = (path.split("/").pop() ?? path).toLowerCase();
+      return base === lower || base === md;
+    };
   }
   return path => {
     const l = path.toLowerCase();
-    return l === withExt || l === lower || l.startsWith(lower + "/");
+    return l === lower || l === md || l.startsWith(lower + "/");
   };
 }
 

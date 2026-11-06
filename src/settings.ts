@@ -127,7 +127,9 @@ export class LanesSettingTab extends PluginSettingTab {
         t.inputEl.addClass("lane-setting-textarea");
         t.setPlaceholder("Templates/\n*.excalidraw.md");
         t.setValue(this.s.routeExceptions);
-        t.onChange(v => this.set("routeExceptions", v, "routing"));
+        // applied when the field loses focus: a half-typed pattern would move matching tabs into lanes
+        t.onChange(v => this.set("routeExceptions", v, "none"));
+        t.inputEl.addEventListener("blur", () => void this.plugin.settingsChanged("routing"));
       });
 
     // ---------- Lane layout ----------
@@ -140,7 +142,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "accordion",
       "Accordion mode",
-      "Opening or expanding a note collapses the other notes in its lane, except pinned ones.",
+      "Opening or expanding a note collapses the other notes in its lane, except pinned ones. A collapsed note's undo history is cleared.",
       "none",
     );
     this.number(
@@ -154,7 +156,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "autoCollapseAfter",
       "Auto-collapse after this many expanded",
-      "With more notes expanded than this, the least recently opened ones (not pinned) collapse. 0 = off",
+      "With more notes expanded than this, the least recently opened ones (not pinned) collapse, which clears their undo history. 0 = off",
       "none",
     );
 
@@ -246,6 +248,8 @@ export class LanesSettingTab extends PluginSettingTab {
         t.inputEl.setAttr("aria-invalid", String(!ok));
         if (!ok) return;
         this.s.defaultLayout = v;
+        // "50, 50, " is still being typed: don't merge the third lane away in the meantime
+        if (/[,;]\s*$/.test(v)) return void (await this.plugin.saveSettings());
         await this.plugin.saveSettings();
         applySoon();
       });
