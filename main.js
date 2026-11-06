@@ -2504,6 +2504,7 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     this.patchIterateLeaves();
     this.patchOpenFile();
     this.patchGetLeaf();
+    this.patchActiveView();
     this.patchCreateLeafBySplit();
     this.patchDuplicateLeaf();
     this.patchMoveToPopout();
@@ -2948,6 +2949,38 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
    * getUnpinnedLeaf for a plain open) and only then call openFile; by then the active leaf is often a fresh
    * temporary tab, so the source lane has to be read here.
    */
+  /**
+   * With a lanes tab as the active leaf, "the active Markdown view" is its note: the focused card, else the one
+   * active last, else the first open one. workspace.activeEditor (and getActiveFile) come from
+   * getActiveViewOfType(MarkdownView), and the lanes view itself isn't one, so without this, plugins acting on
+   * the active editor fail in a lanes tab: Templater's "No active editor, can't append templates".
+   */
+  patchActiveView() {
+    const ws = this.app.workspace;
+    const plugin = this;
+    this.register(
+      around(ws, {
+        getActiveViewOfType: (next) => function(type) {
+          const r = next.call(this, type);
+          if (r || typeof type !== "function") return r;
+          const view = ws.activeLeaf?.view;
+          if (!(view instanceof LanesView)) return r;
+          const card = plugin.cardOfTab(view);
+          return card && card.view instanceof type ? card.view : r;
+        }
+      })
+    );
+  }
+  /** The lanes tab's current note: the focused card, else the card active last, else the first open one. */
+  cardOfTab(view) {
+    const mine = [...this.hostedLeaves].filter(([, h]) => h.lane.tab === view);
+    const focused = activeDocument.activeElement;
+    const inFocus = focused && mine.find(([, h]) => h.item.el.contains(focused));
+    if (inFocus) return inFocus[0];
+    const last = this.lastCard.get(view);
+    if (last && mine.some(([l]) => l === last)) return last;
+    return mine.find(([, h]) => !h.item.collapsed)?.[0] ?? null;
+  }
   patchGetLeaf() {
     const ws = this.app.workspace;
     const plugin = this;
@@ -3227,9 +3260,7 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
     }
     const view = leaf.view;
     if (!(view instanceof LanesView)) return;
-    const hostedIn = (l) => !!l && this.hostedLeaves.get(l)?.lane.tab === view;
-    const last = this.lastCard.get(view);
-    const card = hostedIn(last) ? last : [...this.hostedLeaves.keys()].find((l) => hostedIn(l));
+    const card = this.cardOfTab(view);
     if (!card) return;
     activeWindow.setTimeout(() => {
       if (this.app.workspace.activeLeaf === leaf && this.hostedLeaves.has(card))
