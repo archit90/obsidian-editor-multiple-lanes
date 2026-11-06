@@ -13,6 +13,14 @@ export interface ItemData {
   collapsed: boolean;
   pinned?: boolean;
   openedAt?: number;
+  /** The note's own view mode (Reading view / Live Preview / Source mode), as MarkdownView state fields. */
+  view?: NoteView;
+}
+
+/** MarkdownView's view-mode fields (see view-mode.ts). */
+export interface NoteView {
+  mode?: "preview" | "source";
+  source?: boolean;
 }
 
 /** A card leaving one lane for another (its editor reopens there with this mode and cursor). */
@@ -22,11 +30,13 @@ export interface Taken {
   pinned: boolean;
   pending: MountState | null;
   openedAt: number;
+  view: NoteView | null;
 }
 
 /** What a hosted editor is (re)opened with: from a swept tab, a routed open, or the state saved on collapse. */
 export interface MountState {
   mode?: string;
+  source?: boolean;
   eState?: any;
 }
 
@@ -35,6 +45,9 @@ export interface Item {
   collapsed: boolean;
   pinned: boolean; // stays above the other notes; not closed by ×, Ctrl+W, Close all / others
   openedAt: number; // last added / opened / expanded (stamp()), for "Keeping lanes tidy"; saved in the view state
+  /** Its own view mode, kept while unmounted and saved with the tab; null: the vault default. */
+  view: NoteView | null;
+  modeEl: HTMLElement;
   el: HTMLElement;
   pinEl: HTMLElement;
   chevEl: HTMLElement;

@@ -3,6 +3,11 @@
 import "obsidian";
 
 declare module "obsidian" {
+  interface Vault {
+    /** A vault setting from .obsidian/app.json (e.g. "defaultViewMode", "livePreview"). */
+    getConfig?(key: string): unknown;
+  }
+
   interface App {
     /** Tracks the current drag: `draggable` is what Obsidian's own drop targets read. */
     dragManager?: DragManager;

@@ -265,797 +265,6 @@ function insertIndex(others, position, after) {
   return 0;
 }
 
-// src/types.ts
-var VIEW_TYPE = "editor-lanes";
-var LEGACY_VIEW_TYPE = "editor-lane";
-var SWALLOW_MS = 700;
-var INTENT_MS = 2e3;
-var lastStamp = 0;
-function stamp() {
-  lastStamp = Math.max(Date.now(), lastStamp + 1);
-  return lastStamp;
-}
-
-// src/lane.ts
-var srHintSeq = 0;
-var Lane = class {
-  constructor(tab, plugin) {
-    this.tab = tab;
-    this.plugin = plugin;
-    this.items = [];
-    this.observer = null;
-    this.observerMargin = -1;
-    // the pre-load distance the observer was built with
-    this.observerWin = null;
-    // and the window (a tab moved to a popout needs a new one)
-    this.lazyQueue = [];
-    this.draining = false;
-    const root = this.el = tab.contentEl.createDiv({ cls: "lane" });
-    root.addEventListener("pointerdown", () => this.plugin.notePointerIn(this), { capture: true });
-    this.emptyEl = root.createDiv({
-      cls: "lane-empty",
-      text: import_obsidian.Platform.isMobile ? "Open a note, long-press a link \u2192 Open in editor lane, or drag a note here." : "Open a note, Shift-click a link, or drag a note or link here."
-    });
-    this.listEl = root.createDiv({ cls: "lane-list" });
-    this.updateEmpty();
-    this.setupDrop(root);
-    root.addEventListener("contextmenu", (e) => {
-      if (asEl(e.target)?.closest(".lane-item")) return;
-      e.preventDefault();
-      const menu = new import_obsidian.Menu();
-      this.tab.addLaneMenuItems(menu, this);
-      menu.showAtMouseEvent(e);
-    });
-    this.applySettings();
-  }
-  get app() {
-    return this.plugin.app;
-  }
-  save() {
-    this.tab.save();
-  }
-  /** What a lane shows and how it loads, from the settings; called when made and whenever settings change. */
-  applySettings() {
-    for (const it of this.items) this.updateTitle(it);
-    if (this.observerMargin !== this.plugin.settings.preloadDistance || this.observerWin !== this.el.win) {
-      this.buildObserver();
-    }
-  }
-  /** The tab moved to another window: lazy mounting needs an observer from that window. */
-  checkWindow() {
-    if (this.observerWin !== this.el.win) this.buildObserver();
-  }
-  /** Detach every hosted leaf and stop observing. Safe to call twice. */
-  destroy() {
-    for (const it of this.items) this.unmount(it);
-    this.items = [];
-    this.lazyQueue = [];
-    this.listEl.empty();
-    this.observer?.disconnect();
-    this.observer = null;
-    this.observerMargin = -1;
-    if (this.plugin.lastLane === this) this.plugin.lastLane = null;
-  }
-  // ---------- persistence (the tab's view state) ----------
-  getState() {
-    return this.items.map((i) => ({ path: i.file.path, collapsed: i.collapsed, pinned: i.pinned, openedAt: i.openedAt }));
-  }
-  /** Cards from a saved state (an empty lane only). Notes that no longer exist are skipped. */
-  load(list) {
-    if (this.items.length) return;
-    list.forEach((d, n) => {
-      const f = this.app.vault.getAbstractFileByPath(d.path);
-      if (!(f instanceof import_obsidian.TFile) || this.items.some((i) => i.file === f)) return;
-      const it = this.createItem(f, d.collapsed, !!d.pinned, d.openedAt ?? list.length - n);
-      this.place(it, this.items.length);
-      if (!it.collapsed) this.mountLazily(it);
-    });
-    this.updateEmpty();
-  }
-  /** The vault changed: a deleted note's card closes, a renamed one's title follows. */
-  onFileDeleted(f) {
-    for (const it of this.items.filter((i) => i.file === f)) this.close(it);
-  }
-  onFileRenamed(f) {
-    const it = this.items.find((i) => i.file === f);
-    if (!it) return;
-    this.updateTitle(it);
-    this.save();
-  }
-  /**
-   * Expanded notes restored from a layout (or "Expand all") mount once they're scrolled within the pre-load
-   * distance. IntersectionObserver's rootMargin is fixed at construction, so a new distance needs a new one;
-   * every expanded note that hasn't mounted yet is observed again.
-   */
-  buildObserver() {
-    this.observer?.disconnect();
-    this.observer = null;
-    const margin = this.plugin.settings.preloadDistance;
-    this.observerMargin = margin;
-    this.observerWin = this.el.win;
-    try {
-      const IO = this.el.win?.IntersectionObserver ?? IntersectionObserver;
-      this.observer = new IO(
-        (entries) => {
-          for (const en of entries) {
-            if (!en.isIntersecting) continue;
-            const it = this.items.find((i) => i.el === en.target);
-            if (it && !it.collapsed && !it.leaf && !this.lazyQueue.includes(it)) this.lazyQueue.push(it);
-          }
-          void this.drainLazy();
-        },
-        { root: this.listEl, rootMargin: `${margin}px 0px` }
-      );
-    } catch {
-      this.observer = null;
-    }
-    for (const it of this.items) if (!it.collapsed && !it.leaf) this.mountLazily(it);
-  }
-  // ---------- items ----------
-  /**
-   * Add a note where "New notes go" says (by default the top, below any pinned notes), or at `opts.index`, and
-   * expand it. A note already in this lane moves there instead; a pinned one keeps its place. Then the
-   * "Keeping lanes tidy" rules run, never touching this note.
-   */
-  async add(file, opts = {}) {
-    this.plugin.lastLane = this;
-    let it = this.items.find((i) => i.file === file);
-    const isNew = !it;
-    if (!it) it = this.createItem(file, false);
-    it.openedAt = stamp();
-    const cur = this.items.indexOf(it);
-    if (opts.index !== void 0) this.placeAt(it, cur >= 0 && cur < opts.index ? opts.index - 1 : opts.index);
-    else if (!it.pinned || cur < 0) {
-      const others = this.items.filter((i) => i !== it);
-      this.place(it, insertIndex(others, this.plugin.settings.newNotePosition, opts.after));
-    }
-    this.updateEmpty();
-    if (!it.leaf && opts.mode) it.pending = { ...it.pending, mode: opts.mode };
-    if (isNew) this.closeOverLimit(it);
-    await this.setCollapsed(it, false);
-    this.afterExpand(it);
-    if (opts.index === void 0) this.scrollToItem(it);
-    if (opts.focus !== false) this.tab.showLane(this);
-    const leaf = it.leaf;
-    if (leaf) {
-      if (opts.mode && leaf.getViewState().state?.mode !== opts.mode) {
-        const vs = leaf.getViewState();
-        await leaf.setViewState({ ...vs, state: { ...vs.state, mode: opts.mode } });
-      }
-      if (isNew && opts.history) {
-        try {
-          leaf.history?.deserialize?.(opts.history);
-        } catch {
-        }
-      }
-      if (opts.focus) this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      if (opts.eState) leaf.setEphemeralState(opts.eState);
-    }
-    this.save();
-  }
-  createItem(file, collapsed, pinned = false, openedAt = stamp()) {
-    const el = createDiv({ cls: "lane-item" });
-    const header = el.createDiv({ cls: "lane-item-header" });
-    const chevEl = header.createEl("button", { cls: "lane-chevron" });
-    const hintId = `lane-title-hint-${++srHintSeq}`;
-    const nameEl = header.createSpan({ cls: "lane-item-name" });
-    const pathEl = nameEl.createSpan({ cls: "lane-item-path" });
-    const titleEl = nameEl.createSpan({
-      cls: "lane-item-title",
-      attr: {
-        contenteditable: String(!import_obsidian.Platform.isMobile),
-        spellcheck: "false",
-        role: "textbox",
-        "aria-describedby": hintId
-      }
-    });
-    header.createSpan({ cls: "lane-sr-only", text: "Note name. Edit to rename the note.", attr: { id: hintId } });
-    const pinEl = header.createEl("button", { cls: "lane-pin clickable-icon" });
-    (0, import_obsidian.setIcon)(pinEl, "pin");
-    const closeEl = header.createEl("button", { cls: "lane-close", text: "\u2715", attr: { "aria-label": "Close" } });
-    const bodyEl = el.createDiv({ cls: "lane-item-body" });
-    const it = {
-      file,
-      collapsed,
-      pinned,
-      openedAt,
-      el,
-      pinEl,
-      chevEl,
-      titleEl,
-      pathEl,
-      bodyEl,
-      split: null,
-      leaf: null,
-      ready: null,
-      pending: null,
-      editStart: null,
-      cancelEdit: false
-    };
-    this.updateTitle(it);
-    this.applyCollapsed(it);
-    this.applyPinned(it);
-    pinEl.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.togglePin(it);
-    });
-    header.draggable = true;
-    header.addEventListener("dragstart", (e) => {
-      if (asEl(e.target)?.closest(".lane-item-title:focus, button")) {
-        e.preventDefault();
-        return;
-      }
-      this.plugin.dragItem = { lane: this, item: it };
-      el.addClass("is-lane-dragging");
-      const dm = this.app.dragManager;
-      try {
-        dm?.onDragStart?.(e, dm.dragFile(e, it.file, "editor-lanes"));
-      } catch {
-      }
-    });
-    header.addEventListener("dragend", () => this.plugin.endItemDrag());
-    titleEl.addEventListener("focus", () => {
-      header.draggable = false;
-    });
-    titleEl.addEventListener("blur", () => {
-      header.draggable = true;
-    });
-    header.addEventListener("click", (e) => {
-      if (e.target.closest('.lane-item-title[contenteditable="true"], .lane-close, .lane-pin')) return;
-      const expanding = it.collapsed;
-      if (expanding) it.openedAt = stamp();
-      void this.setCollapsed(it, !it.collapsed).then(() => {
-        if (expanding) this.afterExpand(it);
-        this.save();
-      });
-    });
-    bodyEl.addEventListener("pointerdown", () => {
-      if (!it.collapsed && !it.leaf) void this.mount(it);
-    });
-    titleEl.addEventListener("mousedown", (e) => {
-      if (!import_obsidian.Keymap.isModEvent(e)) return;
-      e.preventDefault();
-      if (this.plugin.settings.lanesOnly) void this.plugin.openInLane(it.file, "newTab", this, { focus: true });
-      else void this.app.workspace.getLeaf("tab").openFile(it.file);
-    });
-    titleEl.addEventListener("focus", () => {
-      if (it.editStart === null) it.editStart = titleEl.textContent ?? "";
-    });
-    titleEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        titleEl.blur();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        it.cancelEdit = true;
-        titleEl.setText(it.file.basename);
-        titleEl.blur();
-      } else if (e.key === "ArrowDown" && it.leaf) {
-        e.preventDefault();
-        this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
-      }
-    });
-    titleEl.addEventListener("paste", (e) => {
-      e.preventDefault();
-      const text = (e.clipboardData?.getData("text/plain") ?? "").replace(/[\r\n]+/g, " ");
-      titleEl.doc.execCommand("insertText", false, text);
-    });
-    titleEl.addEventListener("blur", () => {
-      if (!it.cancelEdit && !titleEl.doc.hasFocus()) return;
-      if (import_obsidian.Platform.isMobile) titleEl.setAttr("contenteditable", "false");
-      void this.renameFromTitle(it);
-    });
-    closeEl.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.close(it);
-    });
-    header.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      const menu = new import_obsidian.Menu();
-      const at = this.items.indexOf(it);
-      menu.addItem(
-        (i) => i.setTitle("Open in next lane").setIcon("arrow-right").onClick(() => void this.plugin.openInLane(it.file, "next", this, { focus: true }))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Open in new lanes tab").setIcon("columns-3").onClick(() => void this.plugin.openInLane(it.file, "newTab", this, { focus: true }))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Move to top").setIcon("arrow-up-to-line").setDisabled(at <= 0).onClick(() => this.placeAt(it, 0))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Move up").setIcon("arrow-up").setDisabled(at <= 0).onClick(() => this.placeAt(it, Math.max(0, this.items.indexOf(it) - 1)))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Move down").setIcon("arrow-down").setDisabled(at < 0 || at >= this.items.length - 1).onClick(() => this.placeAt(it, this.items.indexOf(it) + 1))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Move to previous lane").setIcon("arrow-left").onClick(() => void this.plugin.moveToLane(this, it, -1))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Move to next lane").setIcon("arrow-right").onClick(() => void this.plugin.moveToLane(this, it, 1))
-      );
-      menu.addSeparator();
-      menu.addItem(
-        (i) => i.setTitle("Rename note").setIcon("pencil").onClick(() => window.setTimeout(() => this.editTitle(it, "all"), 0))
-      );
-      menu.addItem(
-        (i) => i.setTitle(it.pinned ? "Unpin" : "Pin").setIcon(it.pinned ? "pin-off" : "pin").onClick(() => this.togglePin(it))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Close").setIcon("x").setDisabled(it.pinned).onClick(() => this.close(it))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Close others").setIcon("x-circle").onClick(() => {
-          for (const o of [...this.items]) if (o !== it && !o.pinned) this.close(o);
-        })
-      );
-      this.app.workspace.trigger("file-menu", menu, it.file, "editor-lanes", void 0);
-      menu.showAtMouseEvent(e);
-    });
-    return it;
-  }
-  /** Focus the card title and select it, for `eState.rename` ("all" / "start" / "end"), e.g. a new note or F2. */
-  editTitle(it, how) {
-    const el = it.titleEl;
-    el.setAttr("contenteditable", "true");
-    el.focus();
-    const sel = el.win.getSelection();
-    if (!sel) return;
-    const range = el.doc.createRange();
-    range.selectNodeContents(el);
-    if (how === "start") range.collapse(true);
-    else if (how === "end") range.collapse(false);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-  /** Rename the note to the edited title, the way Obsidian's inline title does (links update with it). */
-  async renameFromTitle(it) {
-    const raw = it.titleEl.textContent ?? "";
-    const start = it.editStart;
-    it.editStart = null;
-    if (it.cancelEdit) {
-      it.cancelEdit = false;
-      this.updateTitle(it);
-      return;
-    }
-    if (start !== null && raw === start) {
-      this.updateTitle(it);
-      return;
-    }
-    const name = tidyName(raw);
-    if (!name || name === it.file.basename) {
-      this.updateTitle(it);
-      return;
-    }
-    const refuse = (msg) => {
-      new import_obsidian.Notice(msg);
-      this.updateTitle(it);
-    };
-    const err = noteNameError(name, it.file.basename, it.file.parent?.path ?? "");
-    if (err) return refuse(err);
-    const dir = it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/" : "";
-    const path = `${dir}${name}.${it.file.extension}`;
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing && existing !== it.file) return refuse(`"${name}" already exists in ${dir || "the vault root"}`);
-    try {
-      await this.app.fileManager.renameFile(it.file, path);
-    } catch (e) {
-      console.error("[editor-lanes] rename failed", e);
-      refuse(`Couldn't rename: ${e?.message ?? e}`);
-    }
-  }
-  updateTitle(it) {
-    const showFolder = this.plugin.settings.showFolder;
-    const folder = showFolder && it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/\u200E" : "";
-    it.pathEl.setText(folder);
-    it.pathEl.setAttr("title", it.file.path);
-    if (it.titleEl.doc.activeElement === it.titleEl) return;
-    it.titleEl.setText(it.file.basename);
-    it.titleEl.setAttr("aria-label", it.file.path);
-  }
-  applyCollapsed(it) {
-    it.el.toggleClass("is-collapsed", it.collapsed);
-    it.chevEl.setText(it.collapsed ? "\u25B8" : "\u25BE");
-    it.chevEl.setAttr("aria-expanded", String(!it.collapsed));
-    it.chevEl.setAttr("aria-label", it.collapsed ? "Expand note" : "Collapse note");
-  }
-  /** Collapsing unmounts the editor (its mode and cursor are kept for the next expand). */
-  async setCollapsed(it, collapsed) {
-    it.collapsed = collapsed;
-    this.applyCollapsed(it);
-    if (collapsed) this.unmount(it, true);
-    else await this.mount(it);
-  }
-  setAllCollapsed(collapsed) {
-    for (const it of this.items) {
-      if (collapsed) void this.setCollapsed(it, true);
-      else if (it.collapsed) {
-        it.collapsed = false;
-        this.applyCollapsed(it);
-        this.mountLazily(it);
-      }
-    }
-    this.save();
-  }
-  /** "Accordion mode" / "Auto-collapse after N expanded", after `it` was opened or expanded. */
-  afterExpand(it) {
-    const s = this.plugin.settings;
-    const extra = s.accordion ? accordionCollapse(this.items, it) : overExpanded(this.items, s.autoCollapseAfter, it);
-    for (const o of extra) void this.setCollapsed(o, true);
-    if (extra.length) this.save();
-  }
-  /** "Maximum notes per lane": close the least recently opened unpinned notes beyond it, never `keep`. */
-  closeOverLimit(keep) {
-    for (const o of overLimit(this.items, this.plugin.settings.maxNotesPerLane, keep)) this.close(o);
-  }
-  /** "Note already open in another lane: jump to it": show, expand and focus this lane's card. */
-  async reveal(it) {
-    this.plugin.lastLane = this;
-    await this.app.workspace.revealLeaf(this.tab.leaf);
-    if (it.collapsed) {
-      it.openedAt = stamp();
-      await this.setCollapsed(it, false);
-      this.afterExpand(it);
-      this.save();
-    }
-    this.scrollToItem(it);
-    this.tab.showLane(this);
-    if (it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
-    else it.titleEl.focus();
-  }
-  close(it) {
-    this.unmount(it);
-    it.el.remove();
-    this.items.remove(it);
-    this.updateEmpty();
-    this.save();
-  }
-  /** Close every note that isn't pinned. */
-  closeAll() {
-    for (const it of [...this.items]) if (!it.pinned) this.close(it);
-  }
-  // ---------- order, pinning, moving ----------
-  /** Put `it` at `index` of the list without it; pinned notes stay above the others. */
-  place(it, index) {
-    this.items.remove(it);
-    const i = clampIn(this.items, it.pinned, index);
-    this.items.splice(i, 0, it);
-    const next = this.items[i + 1];
-    this.listEl.insertBefore(it.el, next ? next.el : null);
-  }
-  /** Reorder a note of this lane (`index` counted without it). */
-  placeAt(it, index) {
-    this.place(it, index);
-    this.updateEmpty();
-    this.save();
-  }
-  togglePin(it) {
-    it.pinned = !it.pinned;
-    this.applyPinned(it);
-    this.placeAt(it, it.pinned ? this.items.length : 0);
-  }
-  applyPinned(it) {
-    it.el.toggleClass("is-pinned", it.pinned);
-    it.pinEl.setAttr("aria-label", it.pinned ? "Unpin" : "Pin");
-    it.pinEl.setAttr("aria-pressed", String(it.pinned));
-  }
-  scrollToItem(it) {
-    const top = it.el.getBoundingClientRect().top - this.listEl.getBoundingClientRect().top;
-    this.listEl.scrollTop = Math.max(0, this.listEl.scrollTop + top - 12);
-  }
-  /** Remove a card to move it to another lane: its editor closes, keeping its mode and cursor. */
-  take(it) {
-    this.unmount(it, true);
-    it.el.remove();
-    this.items.remove(it);
-    this.updateEmpty();
-    this.save();
-    return { file: it.file, collapsed: it.collapsed, pinned: it.pinned, pending: it.pending, openedAt: it.openedAt };
-  }
-  /**
-   * A card moved here from another lane. If this lane already has the note, that card moves instead.
-   * `focus`: make it the active note (a user's move; not when a layout change merges lanes).
-   */
-  async insertTaken(d, index, focus = true) {
-    if (focus) this.plugin.lastLane = this;
-    let it = this.items.find((i) => i.file === d.file);
-    if (it) {
-      const cur = this.items.indexOf(it);
-      if (d.pinned && !it.pinned) {
-        it.pinned = true;
-        this.applyPinned(it);
-      }
-      this.place(it, cur < index ? index - 1 : index);
-      if (!d.collapsed && it.collapsed) await this.setCollapsed(it, false);
-    } else {
-      it = this.createItem(d.file, d.collapsed, d.pinned, d.openedAt);
-      it.pending = d.pending;
-      this.place(it, index);
-      if (focus) this.closeOverLimit(it);
-      if (!it.collapsed) {
-        if (focus) await this.mount(it);
-        else this.mountLazily(it);
-      }
-    }
-    this.updateEmpty();
-    if (focus && !it.collapsed) {
-      it.openedAt = stamp();
-      this.afterExpand(it);
-    }
-    this.save();
-    if (focus) this.tab.showLane(this);
-    if (focus && !it.collapsed && it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
-  }
-  updateEmpty() {
-    this.tab.laneChanged(this);
-    this.emptyEl.toggleClass("lane-hidden", this.items.length > 0);
-  }
-  // ---------- hosted editors ----------
-  /** Mount an expanded note once it's near the visible part of the lane (one at a time). */
-  mountLazily(it) {
-    if (it.leaf) return;
-    if (this.observer) this.observer.observe(it.el);
-    else void this.mount(it);
-  }
-  async drainLazy() {
-    if (this.draining) return;
-    this.draining = true;
-    try {
-      while (this.lazyQueue.length) {
-        const it = this.lazyQueue.shift();
-        if (!this.items.includes(it) || it.collapsed || it.leaf) continue;
-        if (!this.nearView(it.el)) continue;
-        await this.mount(it);
-        await new Promise((r) => window.setTimeout(r, 16));
-      }
-    } finally {
-      this.draining = false;
-    }
-  }
-  nearView(el) {
-    const r = el.getBoundingClientRect();
-    const v = this.listEl.getBoundingClientRect();
-    const m = this.plugin.settings.preloadDistance;
-    return v.height > 0 && r.top < v.bottom + m && r.bottom > v.top - m;
-  }
-  /** Create the item's private split + leaf and open the note in it. */
-  mount(it) {
-    if (!it.ready) it.ready = this.doMount(it);
-    return it.ready;
-  }
-  async doMount(it) {
-    this.observer?.unobserve(it.el);
-    const ws = this.app.workspace;
-    const split = new import_obsidian.WorkspaceSplit(ws, "horizontal");
-    let detached = false;
-    Object.defineProperty(split, "parent", {
-      configurable: true,
-      get: () => detached ? null : ws.rightSplit ?? null,
-      set: (v) => {
-        if (v === null) detached = true;
-      }
-    });
-    split.containerEl.addClass("lane-split", "mod-visible");
-    let leaf;
-    try {
-      leaf = new import_obsidian.WorkspaceLeaf(this.app);
-      split.insertChild(0, leaf);
-    } catch {
-      leaf = ws.createLeafInParent(split, 0);
-    }
-    it.split = split;
-    it.leaf = leaf;
-    this.plugin.splits.add(split);
-    this.plugin.hostedLeaves.set(leaf, { lane: this, item: it });
-    const origSetPinned = leaf.setPinned?.bind(leaf);
-    origSetPinned?.(true);
-    leaf.setPinned = (v) => {
-      if (!v && it.leaf === leaf && !it.pinned) this.close(it);
-    };
-    leaf.togglePinned = () => {
-    };
-    const origDetach = leaf.detach.bind(leaf);
-    leaf.detach = () => {
-      if (it.leaf === leaf && !leaf.__laneUnmounting) this.close(it);
-      else origDetach();
-    };
-    leaf.getContainer = () => this.tab.leaf.getContainer();
-    const origSetEState = leaf.setEphemeralState.bind(leaf);
-    leaf.setEphemeralState = (e) => {
-      if (e?.rename) {
-        const how = e.rename;
-        e = { ...e };
-        delete e.rename;
-        window.setTimeout(() => this.editTitle(it, how), 0);
-      }
-      return origSetEState(e);
-    };
-    it.bodyEl.appendChild(split.containerEl);
-    const pending = it.pending;
-    it.pending = null;
-    try {
-      await leaf.openFile(it.file, {
-        active: false,
-        state: pending?.mode ? { mode: pending.mode } : void 0,
-        eState: pending?.eState
-      });
-    } catch (e) {
-      console.error("[editor-lanes] could not open", it.file.path, e);
-      it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
-    }
-  }
-  /** Detach the item's hosted leaf. `keep`: remember its mode and cursor for the next mount. */
-  unmount(it, keep = false) {
-    this.observer?.unobserve(it.el);
-    if (!it.split) return;
-    const split = it.split;
-    const leaf = it.leaf;
-    if (keep && leaf) {
-      try {
-        it.pending = { mode: leaf.getViewState().state?.mode, eState: leaf.getEphemeralState() };
-      } catch {
-        it.pending = null;
-      }
-    }
-    this.plugin.splits.delete(split);
-    if (leaf) this.plugin.hostedLeaves.delete(leaf);
-    split.parent = null;
-    it.split = null;
-    it.leaf = null;
-    it.ready = null;
-    if (leaf) {
-      leaf.__laneUnmounting = true;
-      this.plugin.detachQuietly(leaf);
-    }
-    split.containerEl.remove();
-  }
-  // ---------- drag and drop ----------
-  /**
-   * A card dragged by its header (capture phase, so it moves even when dropped on a note's editor, which
-   * would otherwise insert a link) and notes / links dragged from anywhere else: the explorer, tabs, search,
-   * links in Reading view, a selected [[link]] or obsidian:// URL. Those open at the drop point, unless
-   * they're dropped on a note's body: there the editor takes them as usual (a link inserted into the note),
-   * or, with "Dropping a note or link onto a note's text: open it in the lane", the lane takes them in the
-   * capture phase too. Only drags Obsidian's drag manager knows (files, links) are taken over a body: a plain
-   * text drag there still moves text between notes.
-   */
-  setupDrop(root) {
-    const dm = () => this.app.dragManager;
-    const inBody = (t) => !!asEl(t)?.closest(".lane-item-body");
-    const takeOverBody = (e) => this.plugin.settings.dropOnText === "open" && inBody(e.target) && this.dropFiles(e, true).length > 0;
-    const onBody = (e) => {
-      if (this.plugin.dragItem || !takeOverBody(e)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setDropEffect(e, ["link", "copy", "move"]);
-      this.showDrop(this.dropIndex(e.clientY), false);
-      dm()?.setAction?.("Open in this lane");
-    };
-    root.addEventListener("dragenter", onBody, { capture: true });
-    root.addEventListener("dragover", onBody, { capture: true });
-    root.addEventListener(
-      "drop",
-      (e) => {
-        if (this.plugin.dragItem || !takeOverBody(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const index = this.dropIndex(e.clientY);
-        this.clearDrop();
-        void this.addDropped(this.dropFiles(e, true), index);
-      },
-      { capture: true }
-    );
-    const onCard = (e) => {
-      const d = this.plugin.dragItem;
-      if (!d) return;
-      e.preventDefault();
-      setDropEffect(e, ["move", "link", "copy"]);
-      this.showDrop(this.dropIndex(e.clientY, d.item), d.item.pinned, d.item);
-      dm()?.setAction?.(d.lane === this ? "Move here" : "Move to this lane");
-    };
-    root.addEventListener("dragenter", onCard, { capture: true });
-    root.addEventListener("dragover", onCard, { capture: true });
-    root.addEventListener(
-      "drop",
-      (e) => {
-        const d = this.plugin.dragItem;
-        if (!d) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const index = this.dropIndex(e.clientY, d.item);
-        this.plugin.endItemDrag();
-        void this.plugin.moveItem(d.lane, d.item, this, index);
-      },
-      { capture: true }
-    );
-    root.addEventListener("dragover", (e) => {
-      if (this.plugin.dragItem) return;
-      if (e.defaultPrevented || inBody(e.target)) {
-        this.clearDrop();
-        return;
-      }
-      if (!this.dropFiles(e, true).length && !e.dataTransfer?.types.includes("text/plain")) return;
-      e.preventDefault();
-      setDropEffect(e, ["link", "copy", "move"]);
-      this.showDrop(this.dropIndex(e.clientY), false);
-      dm()?.setAction?.("Open in this lane");
-    });
-    root.addEventListener("dragleave", (e) => {
-      if (!root.contains(e.relatedTarget)) this.clearDrop();
-    });
-    root.addEventListener("drop", (e) => {
-      if (this.plugin.dragItem) return;
-      const index = this.dropIndex(e.clientY);
-      this.clearDrop();
-      if (e.defaultPrevented || inBody(e.target)) return;
-      const files = this.dropFiles(e, false);
-      if (!files.length) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void this.addDropped(files, index);
-    });
-  }
-  /** Dropped notes open in order from `index`. */
-  async addDropped(files, index) {
-    let i = index;
-    for (const f of files) {
-      await this.add(f, { index: i });
-      i = this.items.findIndex((x) => x.file === f) + 1;
-    }
-  }
-  /** Where a drop at `y` goes: before the first card whose middle is below it (`skip`: the card being moved). */
-  dropIndex(y, skip) {
-    const list = this.items.filter((i) => i !== skip);
-    for (let i = 0; i < list.length; i++) {
-      const r = list[i].el.getBoundingClientRect();
-      if (y < r.top + r.height / 2) return i;
-    }
-    return list.length;
-  }
-  /** Outline the lane and draw a line where the drop will land. */
-  showDrop(index, pinned, skip) {
-    this.clearDrop();
-    this.el.addClass("is-drop-target");
-    const list = this.items.filter((i2) => i2 !== skip);
-    if (!list.length) return;
-    const i = clampIn(list, pinned, index);
-    if (i < list.length) list[i].el.addClass("lane-drop-before");
-    else list[list.length - 1].el.addClass("lane-drop-after");
-  }
-  clearDrop() {
-    this.el.removeClass("is-drop-target");
-    for (const it of this.items) it.el.removeClass("lane-drop-before", "lane-drop-after");
-  }
-  /** Notes being dragged (Obsidian's drag manager, or an obsidian:// URL / [[link]] as text). */
-  dropFiles(e, peek) {
-    const out = [];
-    const add = (f) => {
-      if (f instanceof import_obsidian.TFile && f.extension === "md" && !out.includes(f)) out.push(f);
-    };
-    const d = this.app.dragManager?.draggable;
-    if (d) {
-      if (d.type === "file") add(d.file);
-      else if (d.type === "files") (d.files ?? []).forEach(add);
-      else if (d.type === "link" && d.linktext) {
-        add(this.app.metadataCache.getFirstLinkpathDest((0, import_obsidian.getLinkpath)(d.linktext), d.sourcePath ?? ""));
-        add(d.file);
-      }
-    }
-    if (out.length || peek) return out;
-    for (const p of linkpathsInText(e.dataTransfer?.getData("text/plain") ?? "")) {
-      add(this.app.metadataCache.getFirstLinkpathDest(p, ""));
-    }
-    return out;
-  }
-};
-function setDropEffect(e, prefs) {
-  const p = e.dataTransfer ? pickDropEffect(e.dataTransfer.effectAllowed, prefs) : null;
-  if (p && e.dataTransfer) e.dataTransfer.dropEffect = p;
-}
-
-// src/layout-modal.ts
-var import_obsidian2 = require("obsidian");
-
 // src/layout.ts
 var MAX_COLUMNS = 8;
 var MAX_ROWS = 6;
@@ -1138,98 +347,6 @@ function effectiveShares(columns, sizes) {
     rows: columns.map((c) => Array.from({ length: c.rows }, () => 100 / c.rows))
   };
 }
-
-// src/layout-modal.ts
-function drawPreview(el, columns) {
-  for (const c of columns) {
-    const col = el.createDiv({ cls: "lane-layout-col" });
-    col.style.flexGrow = String(c.width);
-    for (let r = 0; r < c.rows; r++) col.createDiv({ cls: "lane-layout-cell" });
-  }
-}
-var LayoutModal = class extends import_obsidian2.Modal {
-  constructor(app, plugin, tab) {
-    super(app);
-    this.plugin = plugin;
-    this.tab = tab;
-  }
-  onOpen() {
-    const { contentEl } = this;
-    this.titleEl.setText("Lane layout of this tab");
-    const info = this.tab.layoutInfo();
-    const def = this.plugin.settings.defaultLayout;
-    contentEl.createEl("p", {
-      cls: "lane-layout-hint",
-      text: info.own ? `This tab has its own layout. The default from the settings is "${def}".` : `This tab follows the default from the settings ("${def}"). A layout set here is this tab's own; it stays when the default changes.`
-    });
-    contentEl.createEl("p", {
-      cls: "lane-layout-hint",
-      text: "Columns from left to right as relative widths, separated by commas; add x and a number to stack lanes in a column. 40, 30x2, 30 is three columns with two lanes stacked in the middle one."
-    });
-    const row = contentEl.createDiv({ cls: "lane-layout-input" });
-    const input = new import_obsidian2.TextComponent(row);
-    let apply = null;
-    const summary = contentEl.createDiv({ cls: "lane-layout-summary" });
-    const preview = contentEl.createDiv({ cls: "lane-layout-preview", attr: { "aria-hidden": "true" } });
-    const warn = contentEl.createDiv({ cls: "lane-layout-summary" });
-    const show = (text) => {
-      const p = parseLayout(text);
-      summary.toggleClass("lane-setting-error", !p.ok);
-      input.inputEl.toggleClass("lane-setting-invalid", !p.ok);
-      input.inputEl.setAttr("aria-invalid", String(!p.ok));
-      preview.empty();
-      warn.setText("");
-      apply?.setDisabled(!p.ok);
-      if (!p.ok) {
-        summary.setText(p.error);
-        return;
-      }
-      summary.setText(describeLayout(p.columns));
-      drawPreview(preview, p.columns);
-      const n = laneCount(p.columns);
-      const moved = this.tab.lanes.slice(n).reduce((s, l) => s + l.items.length, 0);
-      if (moved) {
-        warn.setText(
-          `${this.tab.lanes.length - n} lane${this.tab.lanes.length - n === 1 ? "" : "s"} will go; their ${moved} note${moved === 1 ? " moves" : "s move"} into the remaining lanes.`
-        );
-      }
-    };
-    input.setPlaceholder("50, 50");
-    input.setValue(info.text);
-    input.onChange(show);
-    input.inputEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && parseLayout(input.getValue()).ok) {
-        e.preventDefault();
-        void this.done(input.getValue());
-      }
-    });
-    const presets = contentEl.createDiv({ cls: "lane-layout-presets" });
-    for (const p of PRESETS) {
-      new import_obsidian2.ButtonComponent(presets).setButtonText(p.name).onClick(() => {
-        input.setValue(p.layout);
-        show(p.layout);
-        input.inputEl.focus();
-      });
-    }
-    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
-    new import_obsidian2.ButtonComponent(buttons).setButtonText("Use default from settings").setDisabled(!info.own).onClick(() => void this.done(null));
-    new import_obsidian2.ButtonComponent(buttons).setButtonText("Cancel").onClick(() => this.close());
-    apply = new import_obsidian2.ButtonComponent(buttons).setButtonText("Apply").setCta().onClick(() => void this.done(input.getValue()));
-    show(info.text);
-    window.setTimeout(() => input.inputEl.select(), 0);
-  }
-  async done(text) {
-    if (text !== null && !parseLayout(text).ok) return;
-    this.close();
-    await this.tab.setLayout(text);
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-
-// src/tab-name-modal.ts
-var import_obsidian3 = require("obsidian");
 
 // src/tab-names.ts
 var TAB_TITLE_PREFIX = "Editor lane ";
@@ -1446,7 +563,1057 @@ function pickTabName(used, random = Math.random, names = TAB_NAMES) {
   }
 }
 
+// src/tab-state.ts
+var nums = (v) => Array.isArray(v) && v.every((n) => typeof n === "number" && Number.isFinite(n) && n > 0) ? v : null;
+function readSizes(v) {
+  if (!v || typeof v !== "object") return null;
+  const o = v;
+  const cols = nums(o.cols);
+  const rows = Array.isArray(o.rows) ? o.rows.map(nums) : null;
+  if (typeof o.for !== "string" || !cols || !rows || rows.some((r) => !r)) return null;
+  return { for: o.for, cols, rows };
+}
+function readView(v) {
+  if (!v || typeof v !== "object") return null;
+  const o = v;
+  const out = {};
+  if (o.mode === "preview" || o.mode === "source") out.mode = o.mode;
+  if (typeof o.source === "boolean") out.source = o.source;
+  return out.mode || out.source !== void 0 ? out : null;
+}
+function readItem(v) {
+  if (!v || typeof v !== "object") return null;
+  const o = v;
+  if (typeof o.path !== "string" || !o.path) return null;
+  const d = { path: o.path, collapsed: !!o.collapsed };
+  if (o.pinned) d.pinned = true;
+  if (typeof o.openedAt === "number" && Number.isFinite(o.openedAt)) d.openedAt = o.openedAt;
+  const view = readView(o.view);
+  if (view) d.view = view;
+  return d;
+}
+function readTabState(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const layout = typeof o.layout === "string" && parseLayout(o.layout).ok ? o.layout : null;
+  const lanes = Array.isArray(o.lanes) ? o.lanes.map((l) => Array.isArray(l) ? l.map(readItem).filter((d) => !!d) : []) : [];
+  return { name: readTabName(o.name), layout, sizes: readSizes(o.sizes), lanes };
+}
+function savedTabName(raw) {
+  return raw && typeof raw === "object" ? readTabName(raw.name) : null;
+}
+function fitLanes(lanes, count) {
+  const out = Array.from({ length: Math.max(count, 0) }, (_, i) => [...lanes[i] ?? []]);
+  if (!out.length) return out;
+  for (let i = count; i < lanes.length; i++) out[mergeTarget(i, count)].push(...lanes[i]);
+  return out.map((lane) => {
+    const seen = /* @__PURE__ */ new Map();
+    for (const d of lane) {
+      const had = seen.get(d.path);
+      if (!had) seen.set(d.path, { ...d });
+      else if (d.pinned) had.pinned = true;
+    }
+    return [...seen.values()];
+  });
+}
+
+// src/types.ts
+var VIEW_TYPE = "editor-lanes";
+var LEGACY_VIEW_TYPE = "editor-lane";
+var SWALLOW_MS = 700;
+var INTENT_MS = 2e3;
+var lastStamp = 0;
+function stamp() {
+  lastStamp = Math.max(Date.now(), lastStamp + 1);
+  return lastStamp;
+}
+
+// src/view-mode.ts
+var VIEW_MODES = ["reading", "live", "source"];
+var MODE_TITLES = {
+  reading: "Reading view",
+  live: "Live Preview",
+  source: "Source mode"
+};
+var MODE_ICONS = { reading: "book-open", live: "edit-3", source: "code-2" };
+function modeOfState(state, defaults = {}) {
+  const s = state && typeof state === "object" ? state : {};
+  const mode = s.mode === "preview" || s.mode === "source" ? s.mode : defaults.defaultViewMode;
+  if (mode === "preview") return "reading";
+  const source = typeof s.source === "boolean" ? s.source : defaults.livePreview === false;
+  return source ? "source" : "live";
+}
+function stateForMode(mode) {
+  if (mode === "reading") return { mode: "preview" };
+  return { mode: "source", source: mode === "source" };
+}
+function toggledState(state, defaults = {}) {
+  return { mode: modeOfState(state, defaults) === "reading" ? "source" : "preview" };
+}
+
+// src/lane.ts
+var srHintSeq = 0;
+var Lane = class {
+  constructor(tab, plugin) {
+    this.tab = tab;
+    this.plugin = plugin;
+    this.items = [];
+    this.observer = null;
+    this.observerMargin = -1;
+    // the pre-load distance the observer was built with
+    this.observerWin = null;
+    // and the window (a tab moved to a popout needs a new one)
+    this.lazyQueue = [];
+    this.draining = false;
+    const root = this.el = tab.contentEl.createDiv({ cls: "lane" });
+    root.addEventListener("pointerdown", () => this.plugin.notePointerIn(this), { capture: true });
+    this.emptyEl = root.createDiv({
+      cls: "lane-empty",
+      text: import_obsidian.Platform.isMobile ? "Open a note, long-press a link \u2192 Open in editor lane, or drag a note here." : "Open a note, Shift-click a link, or drag a note or link here."
+    });
+    this.listEl = root.createDiv({ cls: "lane-list" });
+    this.updateEmpty();
+    this.setupDrop(root);
+    root.addEventListener("contextmenu", (e) => {
+      if (asEl(e.target)?.closest(".lane-item")) return;
+      e.preventDefault();
+      const menu = new import_obsidian.Menu();
+      this.tab.addLaneMenuItems(menu, this);
+      menu.showAtMouseEvent(e);
+    });
+    this.applySettings();
+  }
+  get app() {
+    return this.plugin.app;
+  }
+  save() {
+    this.tab.save();
+  }
+  /** What a lane shows and how it loads, from the settings; called when made and whenever settings change. */
+  applySettings() {
+    for (const it of this.items) this.updateTitle(it);
+    if (this.observerMargin !== this.plugin.settings.preloadDistance || this.observerWin !== this.el.win) {
+      this.buildObserver();
+    }
+  }
+  /** The tab moved to another window: lazy mounting needs an observer from that window. */
+  checkWindow() {
+    if (this.observerWin !== this.el.win) this.buildObserver();
+  }
+  /** Detach every hosted leaf and stop observing. Safe to call twice. */
+  destroy() {
+    for (const it of this.items) this.unmount(it);
+    this.items = [];
+    this.lazyQueue = [];
+    this.listEl.empty();
+    this.observer?.disconnect();
+    this.observer = null;
+    this.observerMargin = -1;
+    if (this.plugin.lastLane === this) this.plugin.lastLane = null;
+  }
+  // ---------- persistence (the tab's view state) ----------
+  getState() {
+    return this.items.map((i) => {
+      const d = { path: i.file.path, collapsed: i.collapsed, pinned: i.pinned, openedAt: i.openedAt };
+      if (i.view) d.view = { ...i.view };
+      return d;
+    });
+  }
+  /** Cards from a saved state (an empty lane only). Notes that no longer exist are skipped. */
+  load(list) {
+    if (this.items.length) return;
+    list.forEach((d, n) => {
+      const f = this.app.vault.getAbstractFileByPath(d.path);
+      if (!(f instanceof import_obsidian.TFile) || this.items.some((i) => i.file === f)) return;
+      const it = this.createItem(f, d.collapsed, !!d.pinned, d.openedAt ?? list.length - n);
+      if (d.view) this.restoreView(it, d.view);
+      this.place(it, this.items.length);
+      if (!it.collapsed) this.mountLazily(it);
+    });
+    this.updateEmpty();
+  }
+  /** The vault changed: a deleted note's card closes, a renamed one's title follows. */
+  onFileDeleted(f) {
+    for (const it of this.items.filter((i) => i.file === f)) this.close(it);
+  }
+  onFileRenamed(f) {
+    const it = this.items.find((i) => i.file === f);
+    if (!it) return;
+    this.updateTitle(it);
+    this.save();
+  }
+  /**
+   * Expanded notes restored from a layout (or "Expand all") mount once they're scrolled within the pre-load
+   * distance. IntersectionObserver's rootMargin is fixed at construction, so a new distance needs a new one;
+   * every expanded note that hasn't mounted yet is observed again.
+   */
+  buildObserver() {
+    this.observer?.disconnect();
+    this.observer = null;
+    const margin = this.plugin.settings.preloadDistance;
+    this.observerMargin = margin;
+    this.observerWin = this.el.win;
+    try {
+      const IO = this.el.win?.IntersectionObserver ?? IntersectionObserver;
+      this.observer = new IO(
+        (entries) => {
+          for (const en of entries) {
+            if (!en.isIntersecting) continue;
+            const it = this.items.find((i) => i.el === en.target);
+            if (it && !it.collapsed && !it.leaf && !this.lazyQueue.includes(it)) this.lazyQueue.push(it);
+          }
+          void this.drainLazy();
+        },
+        { root: this.listEl, rootMargin: `${margin}px 0px` }
+      );
+    } catch {
+      this.observer = null;
+    }
+    for (const it of this.items) if (!it.collapsed && !it.leaf) this.mountLazily(it);
+  }
+  // ---------- items ----------
+  /**
+   * Add a note where "New notes go" says (by default the top, below any pinned notes), or at `opts.index`, and
+   * expand it. A note already in this lane moves there instead; a pinned one keeps its place. Then the
+   * "Keeping lanes tidy" rules run, never touching this note.
+   */
+  async add(file, opts = {}) {
+    this.plugin.lastLane = this;
+    let it = this.items.find((i) => i.file === file);
+    const isNew = !it;
+    if (!it) it = this.createItem(file, false);
+    it.openedAt = stamp();
+    const cur = this.items.indexOf(it);
+    if (opts.index !== void 0) this.placeAt(it, cur >= 0 && cur < opts.index ? opts.index - 1 : opts.index);
+    else if (!it.pinned || cur < 0) {
+      const others = this.items.filter((i) => i !== it);
+      this.place(it, insertIndex(others, this.plugin.settings.newNotePosition, opts.after));
+    }
+    this.updateEmpty();
+    if (!it.leaf && opts.mode) it.pending = { ...it.pending, mode: opts.mode };
+    if (isNew) this.closeOverLimit(it);
+    await this.setCollapsed(it, false);
+    this.afterExpand(it);
+    if (opts.index === void 0) this.scrollToItem(it);
+    if (opts.focus !== false) this.tab.showLane(this);
+    const leaf = it.leaf;
+    if (leaf) {
+      if (opts.mode && leaf.getViewState().state?.mode !== opts.mode) {
+        const vs = leaf.getViewState();
+        await leaf.setViewState({ ...vs, state: { ...vs.state, mode: opts.mode } });
+        this.syncView(it);
+      }
+      if (isNew && opts.history) {
+        try {
+          leaf.history?.deserialize?.(opts.history);
+        } catch {
+        }
+      }
+      if (opts.focus) this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      if (opts.eState) leaf.setEphemeralState(opts.eState);
+    }
+    this.save();
+  }
+  createItem(file, collapsed, pinned = false, openedAt = stamp()) {
+    const el = createDiv({ cls: "lane-item" });
+    const header = el.createDiv({ cls: "lane-item-header" });
+    const chevEl = header.createEl("button", { cls: "lane-chevron" });
+    const hintId = `lane-title-hint-${++srHintSeq}`;
+    const nameEl = header.createSpan({ cls: "lane-item-name" });
+    const pathEl = nameEl.createSpan({ cls: "lane-item-path" });
+    const titleEl = nameEl.createSpan({
+      cls: "lane-item-title",
+      attr: {
+        contenteditable: String(!import_obsidian.Platform.isMobile),
+        spellcheck: "false",
+        role: "textbox",
+        "aria-describedby": hintId
+      }
+    });
+    header.createSpan({ cls: "lane-sr-only", text: "Note name. Edit to rename the note.", attr: { id: hintId } });
+    const modeEl = header.createEl("button", { cls: "lane-mode clickable-icon" });
+    const pinEl = header.createEl("button", { cls: "lane-pin clickable-icon" });
+    (0, import_obsidian.setIcon)(pinEl, "pin");
+    const closeEl = header.createEl("button", { cls: "lane-close", text: "\u2715", attr: { "aria-label": "Close" } });
+    const bodyEl = el.createDiv({ cls: "lane-item-body" });
+    const it = {
+      file,
+      collapsed,
+      pinned,
+      openedAt,
+      view: null,
+      modeEl,
+      el,
+      pinEl,
+      chevEl,
+      titleEl,
+      pathEl,
+      bodyEl,
+      split: null,
+      leaf: null,
+      ready: null,
+      pending: null,
+      editStart: null,
+      cancelEdit: false
+    };
+    this.updateTitle(it);
+    this.applyCollapsed(it);
+    this.applyPinned(it);
+    pinEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.togglePin(it);
+    });
+    this.updateModeButton(it);
+    modeEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.setView(it, toggledState(this.viewOf(it), this.modeDefaults()));
+    });
+    header.draggable = true;
+    header.addEventListener("dragstart", (e) => {
+      if (asEl(e.target)?.closest(".lane-item-title:focus, button")) {
+        e.preventDefault();
+        return;
+      }
+      this.plugin.dragItem = { lane: this, item: it };
+      el.addClass("is-lane-dragging");
+      const dm = this.app.dragManager;
+      try {
+        dm?.onDragStart?.(e, dm.dragFile(e, it.file, "editor-lanes"));
+      } catch {
+      }
+    });
+    header.addEventListener("dragend", () => this.plugin.endItemDrag());
+    titleEl.addEventListener("focus", () => {
+      header.draggable = false;
+    });
+    titleEl.addEventListener("blur", () => {
+      header.draggable = true;
+    });
+    header.addEventListener("click", (e) => {
+      if (e.target.closest(
+        '.lane-item-title[contenteditable="true"], .lane-close, .lane-pin, .lane-mode'
+      ))
+        return;
+      const expanding = it.collapsed;
+      if (expanding) it.openedAt = stamp();
+      void this.setCollapsed(it, !it.collapsed).then(() => {
+        if (expanding) this.afterExpand(it);
+        this.save();
+      });
+    });
+    bodyEl.addEventListener("pointerdown", () => {
+      if (!it.collapsed && !it.leaf) void this.mount(it);
+    });
+    titleEl.addEventListener("mousedown", (e) => {
+      if (!import_obsidian.Keymap.isModEvent(e)) return;
+      e.preventDefault();
+      if (this.plugin.settings.lanesOnly) void this.plugin.openInLane(it.file, "newTab", this, { focus: true });
+      else void this.app.workspace.getLeaf("tab").openFile(it.file);
+    });
+    titleEl.addEventListener("focus", () => {
+      if (it.editStart === null) it.editStart = titleEl.textContent ?? "";
+    });
+    titleEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        titleEl.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        it.cancelEdit = true;
+        titleEl.setText(it.file.basename);
+        titleEl.blur();
+      } else if (e.key === "ArrowDown" && it.leaf) {
+        e.preventDefault();
+        this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
+      }
+    });
+    titleEl.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData?.getData("text/plain") ?? "").replace(/[\r\n]+/g, " ");
+      titleEl.doc.execCommand("insertText", false, text);
+    });
+    titleEl.addEventListener("blur", () => {
+      if (!it.cancelEdit && !titleEl.doc.hasFocus()) return;
+      if (import_obsidian.Platform.isMobile) titleEl.setAttr("contenteditable", "false");
+      void this.renameFromTitle(it);
+    });
+    closeEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.close(it);
+    });
+    header.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const menu = new import_obsidian.Menu();
+      const at = this.items.indexOf(it);
+      menu.addItem(
+        (i) => i.setTitle("Open in next lane").setIcon("arrow-right").onClick(() => void this.plugin.openInLane(it.file, "next", this, { focus: true }))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Open in new lanes tab").setIcon("columns-3").onClick(() => void this.plugin.openInLane(it.file, "newTab", this, { focus: true }))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Move to top").setIcon("arrow-up-to-line").setDisabled(at <= 0).onClick(() => this.placeAt(it, 0))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Move up").setIcon("arrow-up").setDisabled(at <= 0).onClick(() => this.placeAt(it, Math.max(0, this.items.indexOf(it) - 1)))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Move down").setIcon("arrow-down").setDisabled(at < 0 || at >= this.items.length - 1).onClick(() => this.placeAt(it, this.items.indexOf(it) + 1))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Move to previous lane").setIcon("arrow-left").onClick(() => void this.plugin.moveToLane(this, it, -1))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Move to next lane").setIcon("arrow-right").onClick(() => void this.plugin.moveToLane(this, it, 1))
+      );
+      menu.addSeparator();
+      const current = modeOfState(this.viewOf(it), this.modeDefaults());
+      for (const m of VIEW_MODES) {
+        menu.addItem(
+          (i) => i.setTitle(MODE_TITLES[m]).setIcon(MODE_ICONS[m]).setChecked(m === current).onClick(() => void this.setView(it, stateForMode(m)))
+        );
+      }
+      menu.addSeparator();
+      menu.addItem(
+        (i) => i.setTitle("Rename note").setIcon("pencil").onClick(() => window.setTimeout(() => this.editTitle(it, "all"), 0))
+      );
+      menu.addItem(
+        (i) => i.setTitle(it.pinned ? "Unpin" : "Pin").setIcon(it.pinned ? "pin-off" : "pin").onClick(() => this.togglePin(it))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Close").setIcon("x").setDisabled(it.pinned).onClick(() => this.close(it))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Close others").setIcon("x-circle").onClick(() => {
+          for (const o of [...this.items]) if (o !== it && !o.pinned) this.close(o);
+        })
+      );
+      this.app.workspace.trigger("file-menu", menu, it.file, "editor-lanes", void 0);
+      menu.showAtMouseEvent(e);
+    });
+    return it;
+  }
+  /** Focus the card title and select it, for `eState.rename` ("all" / "start" / "end"), e.g. a new note or F2. */
+  editTitle(it, how) {
+    const el = it.titleEl;
+    el.setAttr("contenteditable", "true");
+    el.focus();
+    const sel = el.win.getSelection();
+    if (!sel) return;
+    const range = el.doc.createRange();
+    range.selectNodeContents(el);
+    if (how === "start") range.collapse(true);
+    else if (how === "end") range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  /** Rename the note to the edited title, the way Obsidian's inline title does (links update with it). */
+  async renameFromTitle(it) {
+    const raw = it.titleEl.textContent ?? "";
+    const start = it.editStart;
+    it.editStart = null;
+    if (it.cancelEdit) {
+      it.cancelEdit = false;
+      this.updateTitle(it);
+      return;
+    }
+    if (start !== null && raw === start) {
+      this.updateTitle(it);
+      return;
+    }
+    const name = tidyName(raw);
+    if (!name || name === it.file.basename) {
+      this.updateTitle(it);
+      return;
+    }
+    const refuse = (msg) => {
+      new import_obsidian.Notice(msg);
+      this.updateTitle(it);
+    };
+    const err = noteNameError(name, it.file.basename, it.file.parent?.path ?? "");
+    if (err) return refuse(err);
+    const dir = it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/" : "";
+    const path = `${dir}${name}.${it.file.extension}`;
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing && existing !== it.file) return refuse(`"${name}" already exists in ${dir || "the vault root"}`);
+    try {
+      await this.app.fileManager.renameFile(it.file, path);
+    } catch (e) {
+      console.error("[editor-lanes] rename failed", e);
+      refuse(`Couldn't rename: ${e?.message ?? e}`);
+    }
+  }
+  updateTitle(it) {
+    const showFolder = this.plugin.settings.showFolder;
+    const folder = showFolder && it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/\u200E" : "";
+    it.pathEl.setText(folder);
+    it.pathEl.setAttr("title", it.file.path);
+    if (it.titleEl.doc.activeElement === it.titleEl) return;
+    it.titleEl.setText(it.file.basename);
+    it.titleEl.setAttr("aria-label", it.file.path);
+  }
+  applyCollapsed(it) {
+    it.el.toggleClass("is-collapsed", it.collapsed);
+    it.chevEl.setText(it.collapsed ? "\u25B8" : "\u25BE");
+    it.chevEl.setAttr("aria-expanded", String(!it.collapsed));
+    it.chevEl.setAttr("aria-label", it.collapsed ? "Expand note" : "Collapse note");
+  }
+  /** Collapsing unmounts the editor (its mode and cursor are kept for the next expand). */
+  async setCollapsed(it, collapsed) {
+    it.collapsed = collapsed;
+    this.applyCollapsed(it);
+    if (collapsed) this.unmount(it, true);
+    else await this.mount(it);
+  }
+  setAllCollapsed(collapsed) {
+    for (const it of this.items) {
+      if (collapsed) void this.setCollapsed(it, true);
+      else if (it.collapsed) {
+        it.collapsed = false;
+        this.applyCollapsed(it);
+        this.mountLazily(it);
+      }
+    }
+    this.save();
+  }
+  /** "Accordion mode" / "Auto-collapse after N expanded", after `it` was opened or expanded. */
+  afterExpand(it) {
+    const s = this.plugin.settings;
+    const extra = s.accordion ? accordionCollapse(this.items, it) : overExpanded(this.items, s.autoCollapseAfter, it);
+    for (const o of extra) void this.setCollapsed(o, true);
+    if (extra.length) this.save();
+  }
+  /** "Maximum notes per lane": close the least recently opened unpinned notes beyond it, never `keep`. */
+  closeOverLimit(keep) {
+    for (const o of overLimit(this.items, this.plugin.settings.maxNotesPerLane, keep)) this.close(o);
+  }
+  /** "Note already open in another lane: jump to it": show, expand and focus this lane's card. */
+  async reveal(it) {
+    this.plugin.lastLane = this;
+    await this.app.workspace.revealLeaf(this.tab.leaf);
+    if (it.collapsed) {
+      it.openedAt = stamp();
+      await this.setCollapsed(it, false);
+      this.afterExpand(it);
+      this.save();
+    }
+    this.scrollToItem(it);
+    this.tab.showLane(this);
+    if (it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
+    else it.titleEl.focus();
+  }
+  close(it) {
+    this.unmount(it);
+    it.el.remove();
+    this.items.remove(it);
+    this.updateEmpty();
+    this.save();
+  }
+  /** Close every note that isn't pinned. */
+  closeAll() {
+    for (const it of [...this.items]) if (!it.pinned) this.close(it);
+  }
+  // ---------- order, pinning, moving ----------
+  /** Put `it` at `index` of the list without it; pinned notes stay above the others. */
+  place(it, index) {
+    this.items.remove(it);
+    const i = clampIn(this.items, it.pinned, index);
+    this.items.splice(i, 0, it);
+    const next = this.items[i + 1];
+    this.listEl.insertBefore(it.el, next ? next.el : null);
+  }
+  /** Reorder a note of this lane (`index` counted without it). */
+  placeAt(it, index) {
+    this.place(it, index);
+    this.updateEmpty();
+    this.save();
+  }
+  togglePin(it) {
+    it.pinned = !it.pinned;
+    this.applyPinned(it);
+    this.placeAt(it, it.pinned ? this.items.length : 0);
+  }
+  applyPinned(it) {
+    it.el.toggleClass("is-pinned", it.pinned);
+    it.pinEl.setAttr("aria-label", it.pinned ? "Unpin" : "Pin");
+    it.pinEl.setAttr("aria-pressed", String(it.pinned));
+  }
+  scrollToItem(it) {
+    const top = it.el.getBoundingClientRect().top - this.listEl.getBoundingClientRect().top;
+    this.listEl.scrollTop = Math.max(0, this.listEl.scrollTop + top - 12);
+  }
+  // ---------- view mode (per note) ----------
+  /** The vault's "Default view for new tabs" / "Default editing mode", for notes with no mode of their own. */
+  modeDefaults() {
+    const v = this.app.vault;
+    return { defaultViewMode: v.getConfig?.("defaultViewMode"), livePreview: v.getConfig?.("livePreview") };
+  }
+  /** A note's view-mode fields: from its editor while mounted, else what it was left in (or nothing). */
+  viewOf(it) {
+    if (it.leaf) return readView(it.leaf.getViewState().state);
+    return it.view;
+  }
+  /** A saved mode for a note that isn't mounted yet: it opens in it. */
+  restoreView(it, view) {
+    it.view = { ...view };
+    it.pending = { ...it.pending, ...view };
+    this.updateModeButton(it);
+  }
+  /** Switch one note's view mode (`patch`: MarkdownView's mode / source fields). */
+  async setView(it, patch) {
+    const leaf = it.leaf;
+    if (leaf) {
+      const vs = leaf.getViewState();
+      await leaf.setViewState({ ...vs, state: { ...vs.state, ...patch } });
+      this.syncView(it);
+    } else {
+      this.restoreView(it, { ...it.view, ...patch });
+      this.save();
+    }
+  }
+  /** Read the mounted editor's mode back (it can also change by command / hotkey); saves if it changed. */
+  syncView(it) {
+    if (it.leaf) {
+      const view = readView(it.leaf.getViewState().state);
+      if (JSON.stringify(view) !== JSON.stringify(it.view)) {
+        it.view = view;
+        this.save();
+      }
+    }
+    this.updateModeButton(it);
+  }
+  /** After any layout change (a mode toggled by command, Ctrl+E…): every note's mode button and saved mode. */
+  syncViews() {
+    for (const it of this.items) if (it.leaf) this.syncView(it);
+  }
+  updateModeButton(it) {
+    const m = modeOfState(this.viewOf(it), this.modeDefaults());
+    const reading = m === "reading";
+    (0, import_obsidian.setIcon)(it.modeEl, reading ? "edit-3" : "book-open");
+    it.modeEl.setAttr(
+      "aria-label",
+      reading ? "Current view: reading. Click to edit" : `Current view: editing (${MODE_TITLES[m]}). Click to read`
+    );
+    it.el.setAttr("data-view-mode", m);
+  }
+  /** Remove a card to move it to another lane: its editor closes, keeping its mode and cursor. */
+  take(it) {
+    this.unmount(it, true);
+    it.el.remove();
+    this.items.remove(it);
+    this.updateEmpty();
+    this.save();
+    return {
+      file: it.file,
+      collapsed: it.collapsed,
+      pinned: it.pinned,
+      pending: it.pending,
+      openedAt: it.openedAt,
+      view: it.view
+    };
+  }
+  /**
+   * A card moved here from another lane. If this lane already has the note, that card moves instead.
+   * `focus`: make it the active note (a user's move; not when a layout change merges lanes).
+   */
+  async insertTaken(d, index, focus = true) {
+    if (focus) this.plugin.lastLane = this;
+    let it = this.items.find((i) => i.file === d.file);
+    if (it) {
+      const cur = this.items.indexOf(it);
+      if (d.pinned && !it.pinned) {
+        it.pinned = true;
+        this.applyPinned(it);
+      }
+      this.place(it, cur < index ? index - 1 : index);
+      if (!d.collapsed && it.collapsed) await this.setCollapsed(it, false);
+    } else {
+      it = this.createItem(d.file, d.collapsed, d.pinned, d.openedAt);
+      if (d.view) this.restoreView(it, d.view);
+      it.pending = d.pending;
+      this.place(it, index);
+      if (focus) this.closeOverLimit(it);
+      if (!it.collapsed) {
+        if (focus) await this.mount(it);
+        else this.mountLazily(it);
+      }
+    }
+    this.updateEmpty();
+    if (focus && !it.collapsed) {
+      it.openedAt = stamp();
+      this.afterExpand(it);
+    }
+    this.save();
+    if (focus) this.tab.showLane(this);
+    if (focus && !it.collapsed && it.leaf) this.app.workspace.setActiveLeaf(it.leaf, { focus: true });
+  }
+  updateEmpty() {
+    this.tab.laneChanged(this);
+    this.emptyEl.toggleClass("lane-hidden", this.items.length > 0);
+  }
+  // ---------- hosted editors ----------
+  /** Mount an expanded note once it's near the visible part of the lane (one at a time). */
+  mountLazily(it) {
+    if (it.leaf) return;
+    if (this.observer) this.observer.observe(it.el);
+    else void this.mount(it);
+  }
+  async drainLazy() {
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      while (this.lazyQueue.length) {
+        const it = this.lazyQueue.shift();
+        if (!this.items.includes(it) || it.collapsed || it.leaf) continue;
+        if (!this.nearView(it.el)) continue;
+        await this.mount(it);
+        await new Promise((r) => window.setTimeout(r, 16));
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+  nearView(el) {
+    const r = el.getBoundingClientRect();
+    const v = this.listEl.getBoundingClientRect();
+    const m = this.plugin.settings.preloadDistance;
+    return v.height > 0 && r.top < v.bottom + m && r.bottom > v.top - m;
+  }
+  /** Create the item's private split + leaf and open the note in it. */
+  mount(it) {
+    if (!it.ready) it.ready = this.doMount(it);
+    return it.ready;
+  }
+  async doMount(it) {
+    this.observer?.unobserve(it.el);
+    const ws = this.app.workspace;
+    const split = new import_obsidian.WorkspaceSplit(ws, "horizontal");
+    let detached = false;
+    Object.defineProperty(split, "parent", {
+      configurable: true,
+      get: () => detached ? null : ws.rightSplit ?? null,
+      set: (v) => {
+        if (v === null) detached = true;
+      }
+    });
+    split.containerEl.addClass("lane-split", "mod-visible");
+    let leaf;
+    try {
+      leaf = new import_obsidian.WorkspaceLeaf(this.app);
+      split.insertChild(0, leaf);
+    } catch {
+      leaf = ws.createLeafInParent(split, 0);
+    }
+    it.split = split;
+    it.leaf = leaf;
+    this.plugin.splits.add(split);
+    this.plugin.hostedLeaves.set(leaf, { lane: this, item: it });
+    const origSetPinned = leaf.setPinned?.bind(leaf);
+    origSetPinned?.(true);
+    leaf.setPinned = (v) => {
+      if (!v && it.leaf === leaf && !it.pinned) this.close(it);
+    };
+    leaf.togglePinned = () => {
+    };
+    const origDetach = leaf.detach.bind(leaf);
+    leaf.detach = () => {
+      if (it.leaf === leaf && !leaf.__laneUnmounting) this.close(it);
+      else origDetach();
+    };
+    leaf.getContainer = () => this.tab.leaf.getContainer();
+    const origSetEState = leaf.setEphemeralState.bind(leaf);
+    leaf.setEphemeralState = (e) => {
+      if (e?.rename) {
+        const how = e.rename;
+        e = { ...e };
+        delete e.rename;
+        window.setTimeout(() => this.editTitle(it, how), 0);
+      }
+      return origSetEState(e);
+    };
+    it.bodyEl.appendChild(split.containerEl);
+    const pending = it.pending;
+    it.pending = null;
+    try {
+      await leaf.openFile(it.file, {
+        active: false,
+        state: mountViewState(pending),
+        eState: pending?.eState
+      });
+      this.syncView(it);
+    } catch (e) {
+      console.error("[editor-lanes] could not open", it.file.path, e);
+      it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
+    }
+  }
+  /** Detach the item's hosted leaf. `keep`: remember its mode and cursor for the next mount. */
+  unmount(it, keep = false) {
+    this.observer?.unobserve(it.el);
+    if (!it.split) return;
+    const split = it.split;
+    const leaf = it.leaf;
+    if (keep && leaf) {
+      try {
+        const st = leaf.getViewState().state ?? {};
+        it.pending = { mode: st.mode, source: st.source, eState: leaf.getEphemeralState() };
+      } catch {
+        it.pending = null;
+      }
+    }
+    this.plugin.splits.delete(split);
+    if (leaf) this.plugin.hostedLeaves.delete(leaf);
+    split.parent = null;
+    it.split = null;
+    it.leaf = null;
+    it.ready = null;
+    if (leaf) {
+      leaf.__laneUnmounting = true;
+      this.plugin.detachQuietly(leaf);
+    }
+    split.containerEl.remove();
+  }
+  // ---------- drag and drop ----------
+  /**
+   * A card dragged by its header (capture phase, so it moves even when dropped on a note's editor, which
+   * would otherwise insert a link) and notes / links dragged from anywhere else: the explorer, tabs, search,
+   * links in Reading view, a selected [[link]] or obsidian:// URL. Those open at the drop point, unless
+   * they're dropped on a note's body: there the editor takes them as usual (a link inserted into the note),
+   * or, with "Dropping a note or link onto a note's text: open it in the lane", the lane takes them in the
+   * capture phase too. Only drags Obsidian's drag manager knows (files, links) are taken over a body: a plain
+   * text drag there still moves text between notes.
+   */
+  setupDrop(root) {
+    const dm = () => this.app.dragManager;
+    const inBody = (t) => !!asEl(t)?.closest(".lane-item-body");
+    const takeOverBody = (e) => this.plugin.settings.dropOnText === "open" && inBody(e.target) && this.dropFiles(e, true).length > 0;
+    const onBody = (e) => {
+      if (this.plugin.dragItem || !takeOverBody(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDropEffect(e, ["link", "copy", "move"]);
+      this.showDrop(this.dropIndex(e.clientY), false);
+      dm()?.setAction?.("Open in this lane");
+    };
+    root.addEventListener("dragenter", onBody, { capture: true });
+    root.addEventListener("dragover", onBody, { capture: true });
+    root.addEventListener(
+      "drop",
+      (e) => {
+        if (this.plugin.dragItem || !takeOverBody(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const index = this.dropIndex(e.clientY);
+        this.clearDrop();
+        void this.addDropped(this.dropFiles(e, true), index);
+      },
+      { capture: true }
+    );
+    const onCard = (e) => {
+      const d = this.plugin.dragItem;
+      if (!d) return;
+      e.preventDefault();
+      setDropEffect(e, ["move", "link", "copy"]);
+      this.showDrop(this.dropIndex(e.clientY, d.item), d.item.pinned, d.item);
+      dm()?.setAction?.(d.lane === this ? "Move here" : "Move to this lane");
+    };
+    root.addEventListener("dragenter", onCard, { capture: true });
+    root.addEventListener("dragover", onCard, { capture: true });
+    root.addEventListener(
+      "drop",
+      (e) => {
+        const d = this.plugin.dragItem;
+        if (!d) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const index = this.dropIndex(e.clientY, d.item);
+        this.plugin.endItemDrag();
+        void this.plugin.moveItem(d.lane, d.item, this, index);
+      },
+      { capture: true }
+    );
+    root.addEventListener("dragover", (e) => {
+      if (this.plugin.dragItem) return;
+      if (e.defaultPrevented || inBody(e.target)) {
+        this.clearDrop();
+        return;
+      }
+      if (!this.dropFiles(e, true).length && !e.dataTransfer?.types.includes("text/plain")) return;
+      e.preventDefault();
+      setDropEffect(e, ["link", "copy", "move"]);
+      this.showDrop(this.dropIndex(e.clientY), false);
+      dm()?.setAction?.("Open in this lane");
+    });
+    root.addEventListener("dragleave", (e) => {
+      if (!root.contains(e.relatedTarget)) this.clearDrop();
+    });
+    root.addEventListener("drop", (e) => {
+      if (this.plugin.dragItem) return;
+      const index = this.dropIndex(e.clientY);
+      this.clearDrop();
+      if (e.defaultPrevented || inBody(e.target)) return;
+      const files = this.dropFiles(e, false);
+      if (!files.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void this.addDropped(files, index);
+    });
+  }
+  /** Dropped notes open in order from `index`. */
+  async addDropped(files, index) {
+    let i = index;
+    for (const f of files) {
+      await this.add(f, { index: i });
+      i = this.items.findIndex((x) => x.file === f) + 1;
+    }
+  }
+  /** Where a drop at `y` goes: before the first card whose middle is below it (`skip`: the card being moved). */
+  dropIndex(y, skip) {
+    const list = this.items.filter((i) => i !== skip);
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i].el.getBoundingClientRect();
+      if (y < r.top + r.height / 2) return i;
+    }
+    return list.length;
+  }
+  /** Outline the lane and draw a line where the drop will land. */
+  showDrop(index, pinned, skip) {
+    this.clearDrop();
+    this.el.addClass("is-drop-target");
+    const list = this.items.filter((i2) => i2 !== skip);
+    if (!list.length) return;
+    const i = clampIn(list, pinned, index);
+    if (i < list.length) list[i].el.addClass("lane-drop-before");
+    else list[list.length - 1].el.addClass("lane-drop-after");
+  }
+  clearDrop() {
+    this.el.removeClass("is-drop-target");
+    for (const it of this.items) it.el.removeClass("lane-drop-before", "lane-drop-after");
+  }
+  /** Notes being dragged (Obsidian's drag manager, or an obsidian:// URL / [[link]] as text). */
+  dropFiles(e, peek) {
+    const out = [];
+    const add = (f) => {
+      if (f instanceof import_obsidian.TFile && f.extension === "md" && !out.includes(f)) out.push(f);
+    };
+    const d = this.app.dragManager?.draggable;
+    if (d) {
+      if (d.type === "file") add(d.file);
+      else if (d.type === "files") (d.files ?? []).forEach(add);
+      else if (d.type === "link" && d.linktext) {
+        add(this.app.metadataCache.getFirstLinkpathDest((0, import_obsidian.getLinkpath)(d.linktext), d.sourcePath ?? ""));
+        add(d.file);
+      }
+    }
+    if (out.length || peek) return out;
+    for (const p of linkpathsInText(e.dataTransfer?.getData("text/plain") ?? "")) {
+      add(this.app.metadataCache.getFirstLinkpathDest(p, ""));
+    }
+    return out;
+  }
+};
+function setDropEffect(e, prefs) {
+  const p = e.dataTransfer ? pickDropEffect(e.dataTransfer.effectAllowed, prefs) : null;
+  if (p && e.dataTransfer) e.dataTransfer.dropEffect = p;
+}
+function mountViewState(pending) {
+  if (!pending) return void 0;
+  const st = {};
+  if (pending.mode) st.mode = pending.mode;
+  if (typeof pending.source === "boolean") st.source = pending.source;
+  return Object.keys(st).length ? st : void 0;
+}
+
+// src/layout-modal.ts
+var import_obsidian2 = require("obsidian");
+function drawPreview(el, columns) {
+  for (const c of columns) {
+    const col = el.createDiv({ cls: "lane-layout-col" });
+    col.style.flexGrow = String(c.width);
+    for (let r = 0; r < c.rows; r++) col.createDiv({ cls: "lane-layout-cell" });
+  }
+}
+var LayoutModal = class extends import_obsidian2.Modal {
+  constructor(app, plugin, tab) {
+    super(app);
+    this.plugin = plugin;
+    this.tab = tab;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    this.titleEl.setText("Lane layout of this tab");
+    const info = this.tab.layoutInfo();
+    const def = this.plugin.settings.defaultLayout;
+    contentEl.createEl("p", {
+      cls: "lane-layout-hint",
+      text: info.own ? `This tab has its own layout. The default from the settings is "${def}".` : `This tab follows the default from the settings ("${def}"). A layout set here is this tab's own; it stays when the default changes.`
+    });
+    contentEl.createEl("p", {
+      cls: "lane-layout-hint",
+      text: "Columns from left to right as relative widths, separated by commas; add x and a number to stack lanes in a column. 40, 30x2, 30 is three columns with two lanes stacked in the middle one."
+    });
+    const row = contentEl.createDiv({ cls: "lane-layout-input" });
+    const input = new import_obsidian2.TextComponent(row);
+    let apply = null;
+    const summary = contentEl.createDiv({ cls: "lane-layout-summary" });
+    const preview = contentEl.createDiv({ cls: "lane-layout-preview", attr: { "aria-hidden": "true" } });
+    const warn = contentEl.createDiv({ cls: "lane-layout-summary" });
+    const show = (text) => {
+      const p = parseLayout(text);
+      summary.toggleClass("lane-setting-error", !p.ok);
+      input.inputEl.toggleClass("lane-setting-invalid", !p.ok);
+      input.inputEl.setAttr("aria-invalid", String(!p.ok));
+      preview.empty();
+      warn.setText("");
+      apply?.setDisabled(!p.ok);
+      if (!p.ok) {
+        summary.setText(p.error);
+        return;
+      }
+      summary.setText(describeLayout(p.columns));
+      drawPreview(preview, p.columns);
+      const n = laneCount(p.columns);
+      const moved = this.tab.lanes.slice(n).reduce((s, l) => s + l.items.length, 0);
+      if (moved) {
+        warn.setText(
+          `${this.tab.lanes.length - n} lane${this.tab.lanes.length - n === 1 ? "" : "s"} will go; their ${moved} note${moved === 1 ? " moves" : "s move"} into the remaining lanes.`
+        );
+      }
+    };
+    input.setPlaceholder("50, 50");
+    input.setValue(info.text);
+    input.onChange(show);
+    input.inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && parseLayout(input.getValue()).ok) {
+        e.preventDefault();
+        void this.done(input.getValue());
+      }
+    });
+    const presets = contentEl.createDiv({ cls: "lane-layout-presets" });
+    for (const p of PRESETS) {
+      new import_obsidian2.ButtonComponent(presets).setButtonText(p.name).onClick(() => {
+        input.setValue(p.layout);
+        show(p.layout);
+        input.inputEl.focus();
+      });
+    }
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    new import_obsidian2.ButtonComponent(buttons).setButtonText("Use default from settings").setDisabled(!info.own).onClick(() => void this.done(null));
+    new import_obsidian2.ButtonComponent(buttons).setButtonText("Cancel").onClick(() => this.close());
+    apply = new import_obsidian2.ButtonComponent(buttons).setButtonText("Apply").setCta().onClick(() => void this.done(input.getValue()));
+    show(info.text);
+    window.setTimeout(() => input.inputEl.select(), 0);
+  }
+  async done(text) {
+    if (text !== null && !parseLayout(text).ok) return;
+    this.close();
+    await this.tab.setLayout(text);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
 // src/tab-name-modal.ts
+var import_obsidian3 = require("obsidian");
 var TabNameModal = class extends import_obsidian3.Modal {
   constructor(app, plugin, tab) {
     super(app);
@@ -1506,49 +1673,6 @@ var TabNameModal = class extends import_obsidian3.Modal {
     this.contentEl.empty();
   }
 };
-
-// src/tab-state.ts
-var nums = (v) => Array.isArray(v) && v.every((n) => typeof n === "number" && Number.isFinite(n) && n > 0) ? v : null;
-function readSizes(v) {
-  if (!v || typeof v !== "object") return null;
-  const o = v;
-  const cols = nums(o.cols);
-  const rows = Array.isArray(o.rows) ? o.rows.map(nums) : null;
-  if (typeof o.for !== "string" || !cols || !rows || rows.some((r) => !r)) return null;
-  return { for: o.for, cols, rows };
-}
-function readItem(v) {
-  if (!v || typeof v !== "object") return null;
-  const o = v;
-  if (typeof o.path !== "string" || !o.path) return null;
-  const d = { path: o.path, collapsed: !!o.collapsed };
-  if (o.pinned) d.pinned = true;
-  if (typeof o.openedAt === "number" && Number.isFinite(o.openedAt)) d.openedAt = o.openedAt;
-  return d;
-}
-function readTabState(raw) {
-  const o = raw && typeof raw === "object" ? raw : {};
-  const layout = typeof o.layout === "string" && parseLayout(o.layout).ok ? o.layout : null;
-  const lanes = Array.isArray(o.lanes) ? o.lanes.map((l) => Array.isArray(l) ? l.map(readItem).filter((d) => !!d) : []) : [];
-  return { name: readTabName(o.name), layout, sizes: readSizes(o.sizes), lanes };
-}
-function savedTabName(raw) {
-  return raw && typeof raw === "object" ? readTabName(raw.name) : null;
-}
-function fitLanes(lanes, count) {
-  const out = Array.from({ length: Math.max(count, 0) }, (_, i) => [...lanes[i] ?? []]);
-  if (!out.length) return out;
-  for (let i = count; i < lanes.length; i++) out[mergeTarget(i, count)].push(...lanes[i]);
-  return out.map((lane) => {
-    const seen = /* @__PURE__ */ new Map();
-    for (const d of lane) {
-      const had = seen.get(d.path);
-      if (!had) seen.set(d.path, { ...d });
-      else if (d.pinned) had.pinned = true;
-    }
-    return [...seen.values()];
-  });
-}
 
 // src/lanes-view.ts
 var ONE_LANE = [{ width: 100, rows: 1 }];
@@ -2320,6 +2444,7 @@ var EditorLanesPlugin = class extends import_obsidian7.Plugin {
         this.wrapRightSplitCollapse();
         this.requestSweep();
         if (this.app.workspace.getLeavesOfType(LEGACY_VIEW_TYPE).length) this.requestLegacyCleanup();
+        for (const tab of this.allTabs()) for (const lane of tab.lanes) lane.syncViews();
       })
     );
     this.app.workspace.onLayoutReady(async () => {

@@ -16,7 +16,18 @@ import { asEl } from "./dom";
 import { DropEffect, clampIn, linkpathsInText, pickDropEffect } from "./dnd";
 import { noteNameError, tidyName } from "./names";
 import { accordionCollapse, insertIndex, overExpanded, overLimit } from "./tidy";
-import { AddOpts, Item, ItemData, Taken, stamp } from "./types";
+import { readView } from "./tab-state";
+import { AddOpts, Item, ItemData, NoteView, Taken, stamp } from "./types";
+import {
+  MODE_ICONS,
+  MODE_TITLES,
+  ModeDefaults,
+  VIEW_MODES,
+  ViewMode,
+  modeOfState,
+  stateForMode,
+  toggledState,
+} from "./view-mode";
 
 let srHintSeq = 0;
 
@@ -103,7 +114,11 @@ export class Lane {
   // ---------- persistence (the tab's view state) ----------
 
   getState(): ItemData[] {
-    return this.items.map(i => ({ path: i.file.path, collapsed: i.collapsed, pinned: i.pinned, openedAt: i.openedAt }));
+    return this.items.map(i => {
+      const d: ItemData = { path: i.file.path, collapsed: i.collapsed, pinned: i.pinned, openedAt: i.openedAt };
+      if (i.view) d.view = { ...i.view };
+      return d;
+    });
   }
 
   /** Cards from a saved state (an empty lane only). Notes that no longer exist are skipped. */
@@ -114,6 +129,7 @@ export class Lane {
       if (!(f instanceof TFile) || this.items.some(i => i.file === f)) return;
       // no stamp saved: the top note counts as the most recently opened
       const it = this.createItem(f, d.collapsed, !!d.pinned, d.openedAt ?? list.length - n);
+      if (d.view) this.restoreView(it, d.view);
       this.place(it, this.items.length); // pinned ones end up first
       if (!it.collapsed) this.mountLazily(it);
     });
@@ -192,6 +208,7 @@ export class Lane {
       if (opts.mode && leaf.getViewState().state?.mode !== opts.mode) {
         const vs = leaf.getViewState();
         await leaf.setViewState({ ...vs, state: { ...vs.state, mode: opts.mode } });
+        this.syncView(it);
       }
       if (isNew && opts.history) {
         try {
@@ -228,6 +245,8 @@ export class Lane {
       },
     });
     header.createSpan({ cls: "lane-sr-only", text: "Note name. Edit to rename the note.", attr: { id: hintId } });
+    // per-note view mode, like the book / pencil button in a normal tab's header: Reading view ↔ editing
+    const modeEl = header.createEl("button", { cls: "lane-mode clickable-icon" });
     const pinEl = header.createEl("button", { cls: "lane-pin clickable-icon" });
     setIcon(pinEl, "pin");
     const closeEl = header.createEl("button", { cls: "lane-close", text: "✕", attr: { "aria-label": "Close" } });
@@ -237,6 +256,8 @@ export class Lane {
       collapsed,
       pinned,
       openedAt,
+      view: null,
+      modeEl,
       el,
       pinEl,
       chevEl,
@@ -256,6 +277,11 @@ export class Lane {
     pinEl.addEventListener("click", e => {
       e.stopPropagation();
       this.togglePin(it);
+    });
+    this.updateModeButton(it);
+    modeEl.addEventListener("click", e => {
+      e.stopPropagation();
+      void this.setView(it, toggledState(this.viewOf(it), this.modeDefaults()));
     });
 
     // drag the header to reorder the card, or onto another lane to move it there. Elsewhere it drags like a
@@ -286,7 +312,12 @@ export class Lane {
 
     // header click (or the chevron button, which also takes Enter / Space) toggles the note
     header.addEventListener("click", e => {
-      if ((e.target as HTMLElement).closest('.lane-item-title[contenteditable="true"], .lane-close, .lane-pin')) return;
+      if (
+        (e.target as HTMLElement).closest(
+          '.lane-item-title[contenteditable="true"], .lane-close, .lane-pin, .lane-mode',
+        )
+      )
+        return;
       const expanding = it.collapsed;
       if (expanding) it.openedAt = stamp();
       void this.setCollapsed(it, !it.collapsed).then(() => {
@@ -395,6 +426,17 @@ export class Lane {
           .setIcon("arrow-right")
           .onClick(() => void this.plugin.moveToLane(this, it, 1)),
       );
+      menu.addSeparator();
+      const current = modeOfState(this.viewOf(it), this.modeDefaults());
+      for (const m of VIEW_MODES) {
+        menu.addItem(i =>
+          i
+            .setTitle(MODE_TITLES[m])
+            .setIcon(MODE_ICONS[m])
+            .setChecked(m === current)
+            .onClick(() => void this.setView(it, stateForMode(m))),
+        );
+      }
       menu.addSeparator();
       menu.addItem(i =>
         i
@@ -599,6 +641,68 @@ export class Lane {
     this.listEl.scrollTop = Math.max(0, this.listEl.scrollTop + top - 12);
   }
 
+  // ---------- view mode (per note) ----------
+
+  /** The vault's "Default view for new tabs" / "Default editing mode", for notes with no mode of their own. */
+  private modeDefaults(): ModeDefaults {
+    const v = this.app.vault;
+    return { defaultViewMode: v.getConfig?.("defaultViewMode"), livePreview: v.getConfig?.("livePreview") };
+  }
+
+  /** A note's view-mode fields: from its editor while mounted, else what it was left in (or nothing). */
+  private viewOf(it: Item): NoteView | null {
+    if (it.leaf) return readView(it.leaf.getViewState().state);
+    return it.view;
+  }
+
+  /** A saved mode for a note that isn't mounted yet: it opens in it. */
+  private restoreView(it: Item, view: NoteView) {
+    it.view = { ...view };
+    it.pending = { ...it.pending, ...view };
+    this.updateModeButton(it);
+  }
+
+  /** Switch one note's view mode (`patch`: MarkdownView's mode / source fields). */
+  async setView(it: Item, patch: NoteView) {
+    const leaf = it.leaf;
+    if (leaf) {
+      const vs = leaf.getViewState();
+      await leaf.setViewState({ ...vs, state: { ...vs.state, ...patch } });
+      this.syncView(it);
+    } else {
+      this.restoreView(it, { ...it.view, ...patch });
+      this.save();
+    }
+  }
+
+  /** Read the mounted editor's mode back (it can also change by command / hotkey); saves if it changed. */
+  syncView(it: Item) {
+    if (it.leaf) {
+      const view = readView(it.leaf.getViewState().state);
+      if (JSON.stringify(view) !== JSON.stringify(it.view)) {
+        it.view = view;
+        this.save();
+      }
+    }
+    this.updateModeButton(it);
+  }
+
+  /** After any layout change (a mode toggled by command, Ctrl+E…): every note's mode button and saved mode. */
+  syncViews() {
+    for (const it of this.items) if (it.leaf) this.syncView(it);
+  }
+
+  private updateModeButton(it: Item) {
+    const m: ViewMode = modeOfState(this.viewOf(it), this.modeDefaults());
+    const reading = m === "reading";
+    setIcon(it.modeEl, reading ? "edit-3" : "book-open");
+    it.modeEl.setAttr(
+      "aria-label",
+      reading ? "Current view: reading. Click to edit" : `Current view: editing (${MODE_TITLES[m]}). Click to read`,
+    );
+    it.el.setAttr("data-view-mode", m);
+  }
+
   /** Remove a card to move it to another lane: its editor closes, keeping its mode and cursor. */
   take(it: Item): Taken {
     this.unmount(it, true);
@@ -606,7 +710,14 @@ export class Lane {
     this.items.remove(it);
     this.updateEmpty();
     this.save();
-    return { file: it.file, collapsed: it.collapsed, pinned: it.pinned, pending: it.pending, openedAt: it.openedAt };
+    return {
+      file: it.file,
+      collapsed: it.collapsed,
+      pinned: it.pinned,
+      pending: it.pending,
+      openedAt: it.openedAt,
+      view: it.view,
+    };
   }
 
   /**
@@ -626,6 +737,7 @@ export class Lane {
       if (!d.collapsed && it.collapsed) await this.setCollapsed(it, false);
     } else {
       it = this.createItem(d.file, d.collapsed, d.pinned, d.openedAt);
+      if (d.view) this.restoreView(it, d.view);
       it.pending = d.pending;
       this.place(it, index);
       if (focus) this.closeOverLimit(it);
@@ -752,9 +864,10 @@ export class Lane {
     try {
       await leaf.openFile(it.file, {
         active: false,
-        state: pending?.mode ? { mode: pending.mode } : undefined,
+        state: mountViewState(pending),
         eState: pending?.eState,
       });
+      this.syncView(it);
     } catch (e) {
       console.error("[editor-lanes] could not open", it.file.path, e);
       it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
@@ -769,7 +882,8 @@ export class Lane {
     const leaf: any = it.leaf;
     if (keep && leaf) {
       try {
-        it.pending = { mode: leaf.getViewState().state?.mode, eState: leaf.getEphemeralState() };
+        const st = leaf.getViewState().state ?? {};
+        it.pending = { mode: st.mode, source: st.source, eState: leaf.getEphemeralState() };
       } catch {
         it.pending = null;
       }
@@ -940,4 +1054,13 @@ export class Lane {
 function setDropEffect(e: DragEvent, prefs: DropEffect[]) {
   const p = e.dataTransfer ? pickDropEffect(e.dataTransfer.effectAllowed, prefs) : null;
   if (p && e.dataTransfer) e.dataTransfer.dropEffect = p;
+}
+
+/** The view state a card's editor opens with: the mode / source it was left in (if any). */
+function mountViewState(pending: { mode?: string; source?: boolean } | null): Record<string, unknown> | undefined {
+  if (!pending) return undefined;
+  const st: Record<string, unknown> = {};
+  if (pending.mode) st.mode = pending.mode;
+  if (typeof pending.source === "boolean") st.source = pending.source;
+  return Object.keys(st).length ? st : undefined;
 }

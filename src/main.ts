@@ -310,6 +310,8 @@ export default class EditorLanesPlugin extends Plugin {
         this.wrapRightSplitCollapse();
         this.requestSweep();
         if (this.app.workspace.getLeavesOfType(LEGACY_VIEW_TYPE).length) this.requestLegacyCleanup();
+        // a note's view mode changed by command / hotkey (Ctrl+E, "Toggle source mode"): its button and saved mode
+        for (const tab of this.allTabs()) for (const lane of tab.lanes) lane.syncViews();
       }),
     );
     this.app.workspace.onLayoutReady(async () => {

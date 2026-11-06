@@ -2,7 +2,7 @@
 // access, so it can be unit-tested.
 import { Sizes, mergeTarget, parseLayout } from "./layout";
 import { readTabName } from "./tab-names";
-import type { ItemData } from "./types";
+import type { ItemData, NoteView } from "./types";
 
 export interface TabState {
   /**
@@ -30,6 +30,16 @@ function readSizes(v: unknown): Sizes | null {
   return { for: o.for, cols, rows: rows as number[][] };
 }
 
+/** A saved view mode: only Obsidian's own values, else nothing (the vault default). */
+export function readView(v: unknown): NoteView | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const out: NoteView = {};
+  if (o.mode === "preview" || o.mode === "source") out.mode = o.mode;
+  if (typeof o.source === "boolean") out.source = o.source;
+  return out.mode || out.source !== undefined ? out : null;
+}
+
 function readItem(v: unknown): ItemData | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
@@ -37,6 +47,8 @@ function readItem(v: unknown): ItemData | null {
   const d: ItemData = { path: o.path, collapsed: !!o.collapsed };
   if (o.pinned) d.pinned = true;
   if (typeof o.openedAt === "number" && Number.isFinite(o.openedAt)) d.openedAt = o.openedAt;
+  const view = readView(o.view);
+  if (view) d.view = view;
   return d;
 }
 

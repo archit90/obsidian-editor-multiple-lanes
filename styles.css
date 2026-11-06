@@ -280,25 +280,45 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   margin-left: auto;
 }
 
-/* Pin: shown on hover, and always (accent colour) when the note is pinned. A pinned note can't be closed
+/* Pin: always shown (muted; accent colour when the note is pinned). A pinned note can't be closed
    from its header, so its × is hidden. */
-.lane-pin {
+/* Per-note view mode (Reading view ↔ editing), like the book / pencil button in a tab's header. Always shown. */
+.lane-mode {
   margin-left: auto;
   flex: none;
   padding: 2px 4px;
   height: auto;
   background: none;
   box-shadow: none;
-  color: var(--text-faint, #999);
-  opacity: 0;
+  color: var(--text-muted, #888);
+}
+.lane-mode svg {
+  width: 14px;
+  height: 14px;
+}
+.is-mobile .lane-mode svg {
+  width: 18px;
+  height: 18px;
+}
+.is-mobile .lane-mode {
+  min-width: 40px;
+  min-height: 40px;
+}
+.lane-pin {
+  flex: none;
+  padding: 2px 4px;
+  height: auto;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted, #888);
 }
 .lane-pin svg {
   width: 14px;
   height: 14px;
 }
-.lane-item-header:hover .lane-pin,
+.lane-pin:hover,
 .lane-pin:focus-visible {
-  opacity: 1;
+  color: var(--text-normal, inherit);
 }
 .lane-item.is-pinned .lane-pin {
   opacity: 1;
@@ -530,12 +550,6 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.is-mobile .lane-pin {
-  opacity: 0.6;
-}
-.is-mobile .lane-item.is-pinned .lane-pin {
-  opacity: 1;
 }
 .is-mobile .lane-item-title:hover {
   background: none; /* a tap leaves :hover stuck on touch screens */

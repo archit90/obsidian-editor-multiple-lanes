@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitLanes, readTabState, savedTabName } from "./tab-state";
+import { fitLanes, readTabState, readView, savedTabName } from "./tab-state";
 
 const d = (path: string, extra = {}) => ({ path, collapsed: false, ...extra });
 
@@ -57,5 +57,15 @@ describe("tab names", () => {
     expect(savedTabName({ num: 2 })).toBeNull();
     expect(savedTabName(undefined)).toBeNull();
     expect(savedTabName("Nemo")).toBeNull();
+  });
+});
+
+describe("saved view modes", () => {
+  it("keeps a card's mode / source and drops anything else", () => {
+    const s = readTabState({ lanes: [[{ path: "a.md", collapsed: false, view: { mode: "preview", source: true } }]] });
+    expect(s.lanes[0][0].view).toEqual({ mode: "preview", source: true });
+    expect(readView({ mode: "weird", source: "yes" })).toBeNull();
+    expect(readView({ source: false })).toEqual({ source: false });
+    expect(readView(null)).toBeNull();
   });
 });
