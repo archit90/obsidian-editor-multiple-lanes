@@ -33,6 +33,12 @@ describe("loadSettings", () => {
   it("drops unknown keys", () => {
     expect("old" in loadSettings({ old: 1 })).toBe(false);
   });
+  it("drops the removed Navigator tab's settings", () => {
+    const s = loadSettings({ navigatorTab: false, navigatorClosed: true, lanesOnly: false });
+    expect("navigatorTab" in s).toBe(false);
+    expect("navigatorClosed" in s).toBe(false);
+    expect(s.lanesOnly).toBe(false);
+  });
   it("has a valid default layout", () => {
     expect(parseLayout(DEFAULTS.defaultLayout).ok).toBe(true);
   });

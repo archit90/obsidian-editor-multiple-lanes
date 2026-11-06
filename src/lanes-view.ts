@@ -17,7 +17,7 @@ import {
 import { TabNameModal } from "./tab-name-modal";
 import { TAB_TITLE_PREFIX } from "./tab-names";
 import { fitLanes, readTabState } from "./tab-state";
-import { LEGACY_VIEW_TYPE, VIEW_TYPE } from "./types";
+import { LEGACY_VIEW_TYPE, OLD_NAV_VIEW_TYPE, VIEW_TYPE } from "./types";
 
 const ONE_LANE: LayoutColumn[] = [{ width: 100, rows: 1 }];
 /**
@@ -505,6 +505,31 @@ export class LegacyLaneView extends ItemView {
   }
   override async onOpen() {
     this.contentEl.setText("Replaced by lanes tabs; this tab closes.");
+    this.plugin.requestLegacyCleanup();
+  }
+}
+
+/**
+ * Stub for the removed Navigator tab (OLD_NAV_VIEW_TYPE), so a saved layout holding one doesn't show "plugin no
+ * longer active": it closes as soon as it opens (and on layout ready), with no "Undo close tab" entry, and the
+ * File explorer, Search and Bookmarks views are made again in the left sidebar if they're missing.
+ */
+export class OldNavigatorView extends ItemView {
+  constructor(
+    leaf: WorkspaceLeaf,
+    private plugin: EditorLanesPlugin,
+  ) {
+    super(leaf);
+    this.navigation = false;
+  }
+  getViewType() {
+    return OLD_NAV_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return "Navigator (removed)";
+  }
+  override async onOpen() {
+    this.contentEl.setText("Files, Search and Bookmarks are back in the left sidebar; this tab closes.");
     this.plugin.requestLegacyCleanup();
   }
 }

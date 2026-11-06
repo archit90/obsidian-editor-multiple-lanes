@@ -1,4 +1,5 @@
 import {
+  MarkdownEditMode,
   MarkdownView,
   Menu,
   Notice,
@@ -6,6 +7,8 @@ import {
   PaneType,
   Platform,
   Plugin,
+  PreviewRenderer,
+  Scope,
   TAbstractFile,
   TFile,
   WorkspaceContainer,
@@ -17,19 +20,30 @@ import {
   getLinkpath,
 } from "obsidian";
 import { EditorView } from "@codemirror/view";
+import { matchBand, scrollCardBand } from "./card-scroll";
 import { around } from "monkey-around";
 import { DEFAULTS, Settings, loadSettings } from "./config";
 import { asEl } from "./dom";
 import { Matcher, compileExceptions } from "./exceptions";
 import { Lane } from "./lane";
-import { LanesView, LegacyLaneView } from "./lanes-view";
+import { LanesView, LegacyLaneView, OldNavigatorView } from "./lanes-view";
 import { wrapStep } from "./layout";
 import { NotePicker } from "./note-picker";
 import { LanesSettingTab, Refresh } from "./settings";
 import { pickTabName } from "./tab-names";
 import { savedTabName } from "./tab-state";
 import { insertIndex } from "./tidy";
-import { AddOpts, INTENT_MS, Intent, Item, LEGACY_VIEW_TYPE, SWALLOW_MS, VIEW_TYPE, Where } from "./types";
+import {
+  AddOpts,
+  INTENT_MS,
+  Intent,
+  Item,
+  LEGACY_VIEW_TYPE,
+  OLD_NAV_VIEW_TYPE,
+  SWALLOW_MS,
+  VIEW_TYPE,
+  Where,
+} from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFn = (...args: any[]) => any;
@@ -93,7 +107,17 @@ const loose = (o: object) => o as unknown as Record<string, AnyFn>;
  * and scrolled near view, and unmount when collapsed. Workspace patches for cards: createLeafBySplit splits the
  * card's lanes tab instead of its private split, duplicateLeaf gives the empty lanes tab above, moveLeafToPopout
  * moves the card into a new window's lanes tab, and rightSplit.collapse doesn't steal focus from an active card.
- * Checked against Obsidian 1.15.0's app.js and app.css.
+ * Checked against Obsidian 1.15.0's app.js and app.css. The private split comes from hosting.ts (createHostSplit).
+ *
+ * Native editor features in cards. A card's editor has its content's height, so its own scroller never scrolls;
+ * the lane list does. CodeMirror scrolls every scrolling ancestor itself (caret, editing-mode search, #heading
+ * links, Outline), with the card header and an open search bar as scroll margins. What Obsidian does by setting
+ * scrollTop on the note's scroller is patched for cards (patchCardScrolling, card-scroll.ts): Reading view's
+ * scroll to a line / heading and its in-note search's next / previous match, and editing mode's eState
+ * `scroll`. A card's MarkdownView.scroll stays null (it would be re-applied on every resize). In-note search
+ * is per card: each note view has its own bar (sticky under the card header, styles.css), and the editing-mode
+ * search's key scope follows the focused card (searchKeysFollowFocus). Suggest popups are repositioned when a
+ * lane scrolls; back / forward to another note opens it in the lane instead of in place (lane.ts).
  *
  * Mobile (phones and tablets; manifest isDesktopOnly false). Obsidian mobile runs the same app.js: rightSplit
  * is a MobileDrawer (`mobile-drawer`, leaves as direct children) instead of a sidedock, but the card trick holds:
@@ -126,6 +150,9 @@ const loose = (o: object) => o as unknown as Record<string, AnyFn>;
  *
  * Old layouts (one "editor-lane" leaf per lane) aren't converted: their leaves are closed on load, and a window
  * left without a lanes tab gets a new one with the default layout in place of its first old lane (closeLegacy).
+ * An unreleased build had a "Navigator" tab (Files, Search, Bookmarks in the main area), removed again: a saved
+ * one is closed on load by a stub view (OldNavigatorView, closeOldNavigator), which puts those views back in the
+ * left sidebar if they're missing.
  */
 
 export default class EditorLanesPlugin extends Plugin {
@@ -148,7 +175,7 @@ export default class EditorLanesPlugin extends Plugin {
   private lastInput: Node | null = null; // target of the last mousedown / keydown in any window
   private windowDocs = new WeakSet<Document>();
   private requestSweep = debounce(() => void this.sweepMainArea(false), 250, true);
-  requestLegacyCleanup = debounce(() => void this.closeLegacy(), 100, true);
+  requestLegacyCleanup = debounce(() => void this.closeLegacy().then(() => this.closeOldNavigator()), 100, true);
   private noticeAt = 0;
 
   /** The lane used last, in any tab (setting it also makes it its tab's last-used lane and that tab the most recent). */
@@ -169,6 +196,7 @@ export default class EditorLanesPlugin extends Plugin {
     this.addSettingTab(new LanesSettingTab(this.app, this));
     this.registerView(VIEW_TYPE, leaf => new LanesView(leaf, this));
     this.registerView(LEGACY_VIEW_TYPE, leaf => new LegacyLaneView(leaf, this));
+    this.registerView(OLD_NAV_VIEW_TYPE, leaf => new OldNavigatorView(leaf, this));
     this.patchIterateLeaves();
     this.patchOpenFile();
     this.patchGetLeaf();
@@ -309,7 +337,10 @@ export default class EditorLanesPlugin extends Plugin {
       this.app.workspace.on("layout-change", () => {
         this.wrapRightSplitCollapse();
         this.requestSweep();
-        if (this.app.workspace.getLeavesOfType(LEGACY_VIEW_TYPE).length) this.requestLegacyCleanup();
+        const ws = this.app.workspace;
+        if (ws.getLeavesOfType(LEGACY_VIEW_TYPE).length || ws.getLeavesOfType(OLD_NAV_VIEW_TYPE).length) {
+          this.requestLegacyCleanup();
+        }
         // a note's view mode changed by command / hotkey (Ctrl+E, "Toggle source mode"): its button and saved mode
         for (const tab of this.allTabs()) for (const lane of tab.lanes) lane.syncViews();
       }),
@@ -318,6 +349,7 @@ export default class EditorLanesPlugin extends Plugin {
       this.wrapRightSplitCollapse();
       for (const w of this.popouts()) if (w.doc) this.registerWindow(w.doc);
       await this.closeLegacy();
+      await this.closeOldNavigator();
       void this.sweepMainArea(true);
     });
   }
@@ -387,6 +419,7 @@ export default class EditorLanesPlugin extends Plugin {
       },
       { capture: true },
     );
+    this.registerDomEvent(doc, "focusin", e => this.searchKeysFollowFocus(e), { capture: true });
     const swallow = (e: MouseEvent) => {
       const s = this.swallow;
       if (!s) return;
@@ -515,6 +548,34 @@ export default class EditorLanesPlugin extends Plugin {
         ? "Editor Lanes now keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened."
         : "Editor Lanes now keeps all lanes in one tab: the old lanes were closed.",
     );
+  }
+
+  /**
+   * The removed Navigator tab (OLD_NAV_VIEW_TYPE): close any left in the layout (no "Undo close tab" entries),
+   * then make sure the File explorer, Search and Bookmarks views are in the left sidebar again. Obsidian's core
+   * plugins do that themselves on layout-ready (their initLeaf: workspace.ensureSideLeaf(type, "left",
+   * {reveal: false}), which only makes a leaf when none of that type exists); this covers the plugin being
+   * enabled or updated after startup. A disabled core plugin gets no view.
+   */
+  async closeOldNavigator() {
+    const ws = this.app.workspace;
+    if (!ws.layoutReady) return;
+    const old = ws.getLeavesOfType(OLD_NAV_VIEW_TYPE);
+    if (!old.length) return;
+    for (const leaf of old) this.detachQuietly(leaf);
+    const core: [string, string][] = [
+      ["file-explorer", "file-explorer"],
+      ["global-search", "search"],
+      ["bookmarks", "bookmarks"],
+    ];
+    for (const [id, type] of core) {
+      try {
+        if (!this.app.internalPlugins?.getEnabledPluginById(id) || ws.getLeavesOfType(type).length) continue;
+        await ws.ensureSideLeaf(type, "left", { reveal: false });
+      } catch (e) {
+        console.error("[editor-lanes] could not put back the", type, "view", e);
+      }
+    }
   }
 
   private withHostedItem(checking: boolean, fn: (lane: Lane, it: Item) => unknown): boolean {
@@ -766,6 +827,162 @@ export default class EditorLanesPlugin extends Plugin {
     );
   }
 
+  // ---------- native editor features in cards (in-note search, scrolling to a line) ----------
+
+  /** The hosted card whose note view this editing mode / Reading view renderer belongs to. */
+  private cardOf(part: MarkdownEditMode | PreviewRenderer): { lane: Lane; item: Item } | undefined {
+    for (const [leaf, host] of this.hostedLeaves) {
+      const v = leaf.view;
+      if (v instanceof MarkdownView && (v.editMode === part || v.previewMode?.renderer === part)) return host;
+    }
+    return undefined;
+  }
+
+  /**
+   * A card's note view (after it opens, and after a mode change): see patchCardScrolling. MarkdownView.scroll is
+   * the view's own scroll position, re-applied by mode switches, Reading view's onResize (every time the card's
+   * height changes) and saved in its ephemeral state. A card has no scroll of its own (the lane list scrolls),
+   * so it's kept null: re-applying it would now scroll the lane list to that line at random moments.
+   * Explicit requests (a #heading link, Outline, a line, an eState `scroll`) still go through applyScroll.
+   */
+  adoptCardView(view: unknown) {
+    if (!(view instanceof MarkdownView)) return;
+    const v = view as MarkdownView & { __laneCard?: boolean };
+    if (!v.__laneCard) {
+      v.__laneCard = true;
+      Object.defineProperty(v, "scroll", { configurable: true, get: () => null, set: () => {} });
+    }
+    this.patchCardScrolling(v);
+  }
+
+  private patchedProtos = new WeakSet<object>();
+
+  /**
+   * Scrolling a card to a line or a search match. Obsidian scrolls a note by setting scrollTop on its scroller
+   * (.cm-scroller, .markdown-preview-view), which in a card has its content's height and doesn't scroll: the
+   * lane list does. CodeMirror's own scrollIntoView already scrolls every scrolling ancestor (app.js: the
+   * scrollRectIntoView loop walks parentNode up to the window, skipping elements that can't scroll, honouring
+   * EditorView.scrollMargins), so editing-mode search, the caret, #heading / #^block links and Outline in Live
+   * Preview / Source work as is. What sets scrollTop is patched, for cards only (the classes aren't exported:
+   * their prototypes are taken from the first card's view):
+   * - editing mode applyScroll(line) (an eState `scroll`): CodeMirror scrollIntoView(line start, "start");
+   * - Reading view renderer applyScroll(line, {center, highlight}) (#heading / #^block links, Outline, a line,
+   *   `scroll`, a search result's match): run with previewEl.scrollTop captured, then the lane scrolls there;
+   *   `center` is done here (Obsidian's subtracts half of previewEl's height, which is the whole note's);
+   * - Reading view renderer selectRange(match) (in-note search in Reading view: next / previous match): it only
+   *   scrolls when the match is outside previewEl's own view, which in a card is everything; the lane scrolls
+   *   to centre the match when it isn't shown.
+   * Embeds, hover previews and canvas cards use the same classes and are left alone (cardOf finds no card).
+   */
+  private patchCardScrolling(view: MarkdownView) {
+    const plugin = this;
+    const em = view.editMode;
+    const emProto = em ? Object.getPrototypeOf(em) : null;
+    if (emProto && typeof emProto.applyScroll === "function" && !this.patchedProtos.has(emProto)) {
+      this.patchedProtos.add(emProto);
+      this.register(
+        around(emProto as MarkdownEditMode, {
+          applyScroll: next =>
+            function (this: MarkdownEditMode, line: number) {
+              if (typeof line !== "number" || isNaN(line) || !plugin.cardOf(this) || !this.cm) {
+                return next.call(this, line);
+              }
+              const doc = this.cm.state.doc;
+              const n = Math.min(Math.max(0, Math.floor(line)), doc.lines - 1);
+              this.cm.dispatch({ effects: EditorView.scrollIntoView(doc.line(n + 1).from, { y: "start" }) });
+            },
+        }),
+      );
+    }
+    const r = view.previewMode?.renderer;
+    const rProto = r ? Object.getPrototypeOf(r) : null;
+    if (
+      rProto &&
+      typeof rProto.applyScroll === "function" &&
+      typeof rProto.selectRange === "function" &&
+      !this.patchedProtos.has(rProto)
+    ) {
+      this.patchedProtos.add(rProto);
+      this.register(
+        around(rProto as PreviewRenderer, {
+          applyScroll: next =>
+            function (this: PreviewRenderer, line: number, opts?: { center?: boolean; highlight?: boolean }) {
+              const el = this.previewEl;
+              if (!el || !plugin.cardOf(this)) return next.call(this, line, opts);
+              let top: number | null = null;
+              Object.defineProperty(el, "scrollTop", {
+                configurable: true,
+                get: () => top ?? 0,
+                set: (v: number) => {
+                  top = v;
+                },
+              });
+              let done: boolean;
+              try {
+                done = next.call(this, line, opts?.center ? { ...opts, center: false } : opts);
+              } finally {
+                delete (el as { scrollTop?: number }).scrollTop; // back to the prototype's accessor
+              }
+              const at = top;
+              if (at !== null) {
+                scrollCardBand(
+                  el,
+                  () => {
+                    const y = el.getBoundingClientRect().top + at;
+                    return { top: y, bottom: y + 24 };
+                  },
+                  opts?.center ? "center" : "start",
+                );
+              }
+              return done;
+            },
+          selectRange: next =>
+            function (this: PreviewRenderer, match) {
+              next.call(this, match);
+              if (!this.previewEl || !match?.section?.el || !plugin.cardOf(this)) return;
+              scrollCardBand(this.previewEl, () => matchBand(match.section.el, match.start, match.end), "center");
+            },
+        }),
+      );
+    }
+  }
+
+  /**
+   * In-note search per card. Each note view has its own search bar (MarkdownView's editing mode builds one; Reading
+   * view one per view), so several cards can have one open at once, each with its own query, matches and
+   * replace. Reading view's search keys live in its view's scope, which Obsidian uses for the active leaf only, so
+   * they follow the focused card already. Editing mode's push a scope on the window's keymap stack instead, and
+   * only the top one gets keys: with two cards searching, Enter / Escape / F3 typed in one would act on the card
+   * whose bar opened last. So when focus moves into a card's note, that card's open search scope (if any) goes
+   * on top and the other cards' come off (they stay open, and go back on top when focus returns to them). Focus
+   * in a card header (the title) takes them all off; focus outside cards leaves the stack alone.
+   */
+  private searchKeysFollowFocus(e: FocusEvent) {
+    const t = asEl(e.target);
+    const card = t?.closest<HTMLElement>(".lane-item");
+    if (!t || !card) return;
+    const into = t.closest(".lane-item-body") ? card : null;
+    const km = this.app.keymap;
+    let mine: Scope | null = null;
+    for (const [leaf, host] of this.hostedLeaves) {
+      const em = leaf.view instanceof MarkdownView ? leaf.view.editMode : undefined;
+      const scope = em?.search?.isActive ? em.scope : null;
+      if (!scope) continue;
+      if (host.item.el === into) mine = scope;
+      else km.popScope(scope);
+    }
+    if (mine) {
+      km.popScope(mine);
+      km.pushScope(mine);
+    }
+  }
+
+  /** A card's editor is going: its open search's key scope comes off the keymap stack (Obsidian leaves it). */
+  dropSearchKeys(leaf: WorkspaceLeaf) {
+    const em = leaf.view instanceof MarkdownView ? leaf.view.editMode : undefined;
+    if (em?.scope) this.app.keymap.popScope(em.scope);
+  }
+
   /**
    * Cards have a sticky header over their editor: CodeMirror's scroll margins get its height, so scrolling the
    * caret into view (typing, arrow keys, search) never leaves it under the header. Mobile: when the soft
@@ -777,7 +994,10 @@ export default class EditorLanesPlugin extends Plugin {
       EditorView.scrollMargins.of(view => {
         const card = view.dom.closest(".lane-item");
         const head = card?.querySelector<HTMLElement>(":scope > .lane-item-header");
-        return head ? { top: head.offsetHeight + 4 } : null;
+        if (!head) return null;
+        // the card's open search bar sticks under the header (styles.css): the caret / match must clear it too
+        const bar = view.dom.parentElement?.querySelector<HTMLElement>(":scope > .document-search-container");
+        return { top: head.offsetHeight + (bar?.offsetHeight ?? 0) + 4 };
       }),
     );
     if (!Platform.isMobile) return;

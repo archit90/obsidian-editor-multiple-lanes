@@ -1,18 +1,8 @@
-import {
-  App,
-  Keymap,
-  Menu,
-  Notice,
-  Platform,
-  TFile,
-  WorkspaceLeaf,
-  WorkspaceSplit,
-  getLinkpath,
-  setIcon,
-} from "obsidian";
+import { App, Keymap, Menu, Notice, Platform, TFile, WorkspaceLeaf, getLinkpath, setIcon } from "obsidian";
 import type EditorLanesPlugin from "./main";
 import type { LanesView } from "./lanes-view";
 import { asEl } from "./dom";
+import { createHostSplit } from "./hosting";
 import { DropEffect, clampIn, linkpathsInText, pickDropEffect } from "./dnd";
 import { noteNameError, tidyName } from "./names";
 import { accordionCollapse, insertIndex, overExpanded, overLimit } from "./tidy";
@@ -47,6 +37,8 @@ export class Lane {
   private observerMargin = -1; // the pre-load distance the observer was built with
   private observerWin: Window | null = null; // and the window (a tab moved to a popout needs a new one)
   private lazyQueue: Item[] = [];
+  /** Card header heights → `--lane-header-h` on each card (an open search bar sticks right below it). */
+  private headerObserver: ResizeObserver | null = null;
   private draining = false;
 
   constructor(
@@ -64,6 +56,16 @@ export class Lane {
         : "Open a note, Shift-click a link, or drag a note or link here.",
     });
     this.listEl = root.createDiv({ cls: "lane-list" });
+    // [[ / tag / plugin suggest popups follow their caret when an editor's own scroller scrolls; a card's
+    // doesn't, the lane list does
+    this.listEl.addEventListener(
+      "scroll",
+      () => {
+        const host = this.plugin.hostedLeaves.get(this.app.workspace.activeLeaf as WorkspaceLeaf);
+        if (host?.lane === this) this.app.workspace.editorSuggest?.reposition();
+      },
+      { passive: true },
+    );
     this.updateEmpty();
     this.setupDrop(root);
     // Right-click (touch: long-press) on the lane's background (not a card): the lane's menu (lanes have no
@@ -108,6 +110,8 @@ export class Lane {
     this.observer?.disconnect();
     this.observer = null;
     this.observerMargin = -1;
+    this.headerObserver?.disconnect();
+    this.headerObserver = null;
     if (this.plugin.lastLane === this) this.plugin.lastLane = null;
   }
 
@@ -175,6 +179,28 @@ export class Lane {
       this.observer = null;
     }
     for (const it of this.items) if (!it.collapsed && !it.leaf) this.mountLazily(it);
+    this.headerObserver?.disconnect();
+    this.headerObserver = null;
+    try {
+      const RO: typeof ResizeObserver = (this.el.win as any)?.ResizeObserver ?? ResizeObserver;
+      this.headerObserver = new RO(entries => {
+        for (const en of entries) {
+          const head = en.target as HTMLElement;
+          head.parentElement?.style.setProperty("--lane-header-h", `${head.offsetHeight}px`);
+        }
+      });
+    } catch {
+      this.headerObserver = null;
+    }
+    for (const it of this.items) this.observeHeader(it);
+  }
+
+  /** Watch (`on` false: stop watching) a card header's height. */
+  private observeHeader(it: Item, on = true) {
+    const head = it.el.querySelector<HTMLElement>(":scope > .lane-item-header");
+    if (!head) return;
+    if (on) this.headerObserver?.observe(head);
+    else this.headerObserver?.unobserve(head);
   }
 
   // ---------- items ----------
@@ -274,6 +300,7 @@ export class Lane {
     this.updateTitle(it);
     this.applyCollapsed(it);
     this.applyPinned(it);
+    this.observeHeader(it);
     pinEl.addEventListener("click", e => {
       e.stopPropagation();
       this.togglePin(it);
@@ -594,6 +621,7 @@ export class Lane {
 
   close(it: Item) {
     this.unmount(it);
+    this.observeHeader(it, false);
     it.el.remove();
     this.items.remove(it);
     this.updateEmpty();
@@ -678,6 +706,7 @@ export class Lane {
   /** Read the mounted editor's mode back (it can also change by command / hotkey); saves if it changed. */
   syncView(it: Item) {
     if (it.leaf) {
+      this.plugin.adoptCardView(it.leaf.view); // see main.ts patchCardScrolling
       const view = readView(it.leaf.getViewState().state);
       if (JSON.stringify(view) !== JSON.stringify(it.view)) {
         it.view = view;
@@ -706,6 +735,7 @@ export class Lane {
   /** Remove a card to move it to another lane: its editor closes, keeping its mode and cursor. */
   take(it: Item): Taken {
     this.unmount(it, true);
+    this.observeHeader(it, false);
     it.el.remove();
     this.items.remove(it);
     this.updateEmpty();
@@ -803,22 +833,7 @@ export class Lane {
   private async doMount(it: Item) {
     this.observer?.unobserve(it.el);
     const ws = this.app.workspace as any;
-    const split = new (WorkspaceSplit as any)(ws, "horizontal");
-    // Not a child of the right sidebar (see the comment at the top). `parent` is looked up on every read:
-    // loading a layout (startup, the Workspaces plugin) replaces workspace.rightSplit, and setLayout builds
-    // the main area, and so restores lanes, before the new right sidebar exists. A stored reference would
-    // point at the old one (or null), and the hosted leaves would stop counting as attached.
-    let detached = false;
-    Object.defineProperty(split, "parent", {
-      configurable: true,
-      get: () => (detached ? null : (ws.rightSplit ?? null)),
-      set: v => {
-        if (v === null) detached = true;
-      },
-    });
-    // mod-visible: on phones Obsidian hides every .workspace-split inside the main area without it (the
-    // hosted split isn't in the layout tree, so updateMobileVisibleTabGroup never sets or clears it)
-    split.containerEl.addClass("lane-split", "mod-visible");
+    const split = createHostSplit(this.app.workspace); // see hosting.ts
     let leaf: any;
     try {
       leaf = new (WorkspaceLeaf as any)(this.app);
@@ -845,6 +860,19 @@ export class Lane {
       if (it.leaf === leaf && !leaf.__laneUnmounting) this.close(it);
       else origDetach();
     };
+    // Back / forward (Alt+←/→, the mobile navbar) to an entry for another note (history brought along from a
+    // tab that moved into this lane) would show that note in this card's editor, under this card's title: open
+    // it in this lane instead, after this card, like a followed link. Entries for this note apply in place.
+    const hist = leaf.history;
+    if (hist && typeof hist.updateState === "function") {
+      const origUpdate = hist.updateState.bind(hist);
+      hist.updateState = async (entry: { state?: { state?: { file?: unknown } }; eState?: unknown }) => {
+        const path = entry?.state?.state?.file;
+        if (typeof path !== "string" || path === it.file.path) return origUpdate(entry);
+        const f = this.app.vault.getFileByPath(path);
+        if (f) await this.plugin.openInLane(f, "same", this, { focus: true, after: it, eState: entry.eState });
+      };
+    }
     // the tab's window (main or popout), so focusing the note doesn't raise the main window
     leaf.getContainer = () => this.tab.leaf.getContainer();
     // `rename` would act on the (hidden) inline title: edit the card title instead
@@ -896,6 +924,7 @@ export class Lane {
     it.leaf = null;
     it.ready = null;
     if (leaf) {
+      this.plugin.dropSearchKeys(leaf);
       leaf.__laneUnmounting = true;
       this.plugin.detachQuietly(leaf); // no "Undo close tab" entry per hosted note: the lane's own entry restores them
     }

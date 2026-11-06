@@ -234,6 +234,26 @@
 .lane-item-body .cm-content {
   padding-bottom: 0 !important;
 }
+/* In-note search ("Search current file" Ctrl/Cmd+F, "Search & replace" Ctrl/Cmd+H; Reading view has its own):
+   each note view has its own bar, which Obsidian prepends to the editor (.markdown-source-view) or the Reading
+   view (.markdown-reading-view). The card doesn't scroll, its lane does, so the bar sticks under the card's
+   header (--lane-header-h, kept by lane.ts) while the card is scrolled through, on an opaque background (Obsidian
+   paints one only under .mod-active). Its z-index (layer-popover) is Obsidian's: the leaf's `contain: layout`
+   makes it a stacking context, so at the card's end the header (z-index 1, outside the leaf) still covers it. */
+.lane-item-body .markdown-source-view > .document-search-container,
+.lane-item-body .markdown-reading-view > .document-search-container {
+  position: sticky;
+  top: var(--lane-header-h, 40px);
+  margin: 0;
+  padding-left: var(--size-4-4);
+  padding-right: var(--size-4-4);
+  background-color: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+/* Note height capped: the card body is the scroller, below the header */
+.lanes-view.lane-capped .lane-item-body .document-search-container {
+  top: 0;
+}
 /* Obsidian paints `.workspace-split` with --tab-container-background and a leaf outside a main-area tab group
    with --background-secondary (the sidebar colour). Hosted notes should look like a normal editor. */
 .lane-item-body .lane-split,

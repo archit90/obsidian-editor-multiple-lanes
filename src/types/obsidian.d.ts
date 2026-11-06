@@ -1,6 +1,7 @@
 // Obsidian internals Editor Lanes relies on (not in the public API). Checked against Obsidian 1.15.0's
 // app.js; see the comment at the top of main.ts for how they're used.
 import "obsidian";
+import type { EditorView } from "@codemirror/view";
 
 declare module "obsidian" {
   interface Vault {
@@ -13,6 +14,8 @@ declare module "obsidian" {
     dragManager?: DragManager;
     /** Mobile only (null on the desktop): the full-screen tab switcher; `isVisible` while it's open. */
     mobileTabSwitcher?: { isVisible: boolean } | null;
+    /** Core plugins. getEnabledPluginById(id) is the plugin's instance while it's enabled, else null. */
+    internalPlugins?: { getEnabledPluginById(id: string): unknown };
   }
 
   interface View {
@@ -69,15 +72,83 @@ declare module "obsidian" {
      * leaf whose root is rootSplit. Called by setActiveLeaf(leaf, { focus: true }).
      */
     focusLeaf(leaf: WorkspaceLeaf): void;
+    /**
+     * The one editor-suggest popup manager ([[ links, tags, plugin EditorSuggests). Editors call reposition() when
+     * their .cm-scroller scrolls, which a card's never does.
+     */
+    editorSuggest?: { reposition(): void };
   }
 
   interface WorkspaceLeaf {
     /** Set when the leaf is linked to others ("Link with tab"). */
     group?: string | null;
-    history?: { serialize?(): unknown; deserialize?(state: unknown): void };
+    history?: {
+      serialize?(): unknown;
+      deserialize?(state: unknown): void;
+      /**
+       * Back / forward land here (after moving the entry between the stacks): setViewState(entry.state with
+       * popstate, entry.eState) on the leaf, i.e. the leaf shows that entry's note in place.
+       */
+      updateState?(entry: { state?: { state?: { file?: unknown } }; eState?: unknown }): Promise<void>;
+    };
     /** Re-reads the view's icon and display text into the tab header. */
     updateHeader?(): void;
     /** Whether the leaf's element is shown (its tab is the selected one, its window open). */
     isVisible(): boolean;
+  }
+
+  interface Keymap {
+    /** Takes `scope` off its window's stack wherever it is (the top: the one below becomes current). */
+    popScope(scope: Scope): void;
+  }
+
+  interface MarkdownView {
+    /**
+     * The editing mode (Live Preview / Source), created with the view. Its class isn't exported; one per view, so
+     * each note has its own in-note search.
+     */
+    editMode?: MarkdownEditMode;
+    /**
+     * Where the note was scrolled to (a line number, fractional), re-applied by mode switches, resizes
+     * (Reading view's onResize) and getEphemeralState. null: none.
+     */
+    scroll: number | null;
+  }
+
+  /** MarkdownView.editMode. */
+  interface MarkdownEditMode {
+    cm: EditorView;
+    /**
+     * The key scope its in-note search pushed on the window's keymap stack while the search bar is open
+     * (Escape, Enter, F3…; only the top scope gets keys), else null. Set by the search's applyScope callback.
+     */
+    scope: Scope | null;
+    /** "Search current file" / "Search & replace": its own search bar, prepended to the editor's element. */
+    search?: { isActive: boolean };
+    /** Scrolls to a (fractional) line by setting cm.scrollDOM.scrollTop. */
+    applyScroll(line: number): void;
+  }
+
+  interface MarkdownPreviewView {
+    /** Reading view's renderer (not exported); previewEl is the .markdown-preview-view it scrolls. */
+    renderer?: PreviewRenderer;
+  }
+
+  interface PreviewRenderer {
+    previewEl: HTMLElement;
+    /**
+     * Scrolls to a (fractional) line by setting previewEl.scrollTop (`center`: minus half its clientHeight;
+     * `highlight`: flashes it). False when not rendered yet (applyScrollDelayed then retries once it is).
+     */
+    applyScroll(line: number, opts?: { center?: boolean; highlight?: boolean }): boolean;
+    /** Reading view search: shows the match (`center` scrollIntoView, only when outside previewEl's view). */
+    selectRange(match: PreviewMatch): void;
+  }
+
+  /** A Reading view search match: text offsets within its section's text nodes. */
+  interface PreviewMatch {
+    section: { el: HTMLElement };
+    start: number;
+    end: number;
   }
 }

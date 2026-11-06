@@ -5,6 +5,11 @@ import type { Lane } from "./lane";
 export const VIEW_TYPE = "editor-lanes";
 /** The old view: one lane per tab. Leaves of this type are closed on load (see EditorLanesPlugin.closeLegacy). */
 export const LEGACY_VIEW_TYPE = "editor-lane";
+/**
+ * The Navigator tab of an unreleased build (Files, Search and Bookmarks in a main-area tab; removed again at the
+ * user's request). A saved layout may still hold one: it's closed on load (see EditorLanesPlugin.closeOldNavigator).
+ */
+export const OLD_NAV_VIEW_TYPE = "editor-lanes-navigator";
 export const SWALLOW_MS = 700; // after a shift-mousedown we handled, ignore the matching mouseup/click
 export const INTENT_MS = 2000; // an open is matched to the getLeaf call that picked its leaf within this time
 

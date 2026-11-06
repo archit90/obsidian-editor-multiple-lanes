@@ -112,7 +112,8 @@ export function loadSettings(saved: unknown): Settings {
 /**
  * Settings saved by the one-lane-per-tab version, renamed: `layout` (the old locked layout) is now `defaultLayout`, the layout every
  * lanes tab starts with. The old `layout` and `maxLanes` (gone: a tab's lanes are its layout) are then dropped by
- * loadSettings with the other unknown keys, as is `lockLayout` (gone: layouts are always fixed, only sizes change).
+ * loadSettings with the other unknown keys, as is `lockLayout` (gone: layouts are always fixed, only sizes change), and so are the
+ * removed Navigator tab's `navigatorTab` / `navigatorClosed`.
  */
 export function migrateSettings(saved: unknown): Record<string, unknown> {
   const raw: Record<string, unknown> =
