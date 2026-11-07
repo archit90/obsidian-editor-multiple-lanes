@@ -1,0 +1,45 @@
+import { A, B, C, D, MOD, openIn, explorerClick, clickLinkIn, quick, st, eq, headerClick } from "./common.mjs";
+const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
+export const cases = [
+ { id: "CD-01", run: async c => { await openIn(c, A, 0); c.shot("CD-01");
+     const r = await c.js(`const it=${item(0,0)}; const h=it.el.querySelector(".lane-item-header"); return {kids:[...h.children].map(e=>e.className.split(" ")[0]), path: it.pathEl.textContent, title: it.titleEl.textContent, inline: getComputedStyle(it.el.querySelector(".inline-title")).display, vh: getComputedStyle(it.el.querySelector(".view-header")).display, lp: it.leaf.view.getMode(), source: it.leaf.view.getState().source, editable: it.titleEl.contentEditable}`);
+     return { ok: r.path.replace(/\u200E/g,"")==="z/" && r.title==="Writing replaces caching" && r.inline==="none" && r.vh==="none" && r.lp==="source" && r.source===false && r.kids.join()==="lane-chevron,lane-item-name,lane-sr-only,lane-mode,lane-pin,lane-close", note: JSON.stringify(r) }; } },
+ { id: "CD-02", run: async c => { await c.js(`if(!T.f("_test/deep/very/long/folder/name/for/the/test/EL deep note.md")) { await app.vault.createFolder("_test/deep/very/long/folder/name/for/the/test").catch(()=>0); await app.vault.create("_test/deep/very/long/folder/name/for/the/test/EL deep note.md","deep"); } return 1`);
+     await openIn(c, "_test/deep/very/long/folder/name/for/the/test/EL deep note.md", 0); c.shot("CD-02");
+     const r = await c.js(`const it=${item(0,0)}; const t=it.titleEl.getBoundingClientRect(), p=it.pathEl.getBoundingClientRect(), h=it.el.querySelector(".lane-item-header").getBoundingClientRect(); return {titleW:t.width, titleScroll: it.titleEl.scrollWidth, pathW:p.width, pathScroll: it.pathEl.scrollWidth, tip: it.pathEl.title, hw:h.width}`);
+     return { ok: r.titleW >= r.titleScroll - 1 && r.pathW < r.pathScroll && r.tip.endsWith("EL deep note.md"), note: JSON.stringify(r) }; } },
+ { id: "CD-03", run: async c => { await openIn(c, A, 0); const h1 = await c.js(`return ${item(0,0)}.el.querySelector(".lane-item-header").offsetHeight`);
+     await c.js(`T.P().settings.headerSize="compact"; T.P().settings.showFolder=false; await T.P().settingsChanged("looks"); return 1`); c.shot("CD-03");
+     const r = await c.js(`const it=${item(0,0)}; return {h: it.el.querySelector(".lane-item-header").offsetHeight, path: it.pathEl.textContent}`);
+     return { ok: r.h < h1 && r.path==="", note: `comfortable ${h1} → compact ${r.h}, folder "${r.path}"` }; } },
+ { id: "CD-04", run: async c => { await c.js(`for (const p of ["_test/EL rename.md","_test/EL renamed.md","_test/EL linker.md"]) if(T.f(p)) await app.vault.delete(T.f(p)); await app.vault.create("_test/EL rename.md","body"); await app.vault.create("_test/EL linker.md","see [[_test/EL rename]]"); await T.sleep(500); return 1`);
+     await openIn(c, "_test/EL rename.md", 0);
+     await c.clickEl(`${item(0,0)}.titleEl`); await c.key("End"); await c.type("d"); await c.key("Enter"); await c.sleep(1200);
+     let r = await c.js(`return {exists: !!T.f("_test/EL renamed.md"), title: ${item(0,0)}.titleEl.textContent, link: await app.vault.read(T.f("_test/EL linker.md"))}`);
+     const t1 = r.exists && r.title==="EL renamed" && /EL renamed/.test(r.link);
+     // Escape cancels
+     await c.clickEl(`${item(0,0)}.titleEl`); await c.key("End"); await c.type("XYZ"); await c.key("Escape"); await c.sleep(500);
+     const r2 = await c.js(`return {exists: !!T.f("_test/EL renamed.md"), title: ${item(0,0)}.titleEl.textContent}`); const t2 = r2.exists && r2.title==="EL renamed";
+     // click away commits
+     await c.clickEl(`${item(0,0)}.titleEl`); await c.key("End"); await c.type("2"); await c.clickEl(`document.querySelectorAll(".lane")[2]`, {dy: 300}); await c.sleep(1000);
+     const r3 = await c.js(`return {exists: !!T.f("_test/EL renamed2.md"), title: ${item(0,0)}.titleEl.textContent}`); const t3 = r3.exists;
+     // paste multi-line → plain single line
+     await c.clickEl(`${item(0,0)}.titleEl`); await c.js(`const el=${item(0,0)}.titleEl; const dt=new DataTransfer(); dt.setData("text/plain","a\\nb"); const s=getSelection(); const rg=document.createRange(); rg.selectNodeContents(el); rg.collapse(false); s.removeAllRanges(); s.addRange(rg); el.dispatchEvent(new ClipboardEvent("paste",{clipboardData:dt,bubbles:true,cancelable:true})); return 1`);
+     const r4 = await c.js(`return ${item(0,0)}.titleEl.textContent`); await c.key("Escape"); await c.sleep(300);
+     await c.js(`for (const p of ["_test/EL renamed2.md","_test/EL linker.md"]) if(T.f(p)) await app.vault.delete(T.f(p)); return 1`);
+     return { ok: t1 && t2 && t3 && r4==="EL renamed2a b", note: `enter ${t1} ${JSON.stringify(r)}; esc ${t2}; click-away ${t3}; paste "${r4}"` }; } },
+ { id: "CD-05", run: async c => { await c.js(`for (const p of ["_test/EL refuse.md","_test/EL taken.md"]) if(!T.f(p)) await app.vault.create(p,"x"); return 1`); await openIn(c, "_test/EL refuse.md", 0);
+     const tries = ["a/b","a:b",".x","x.md","EL taken","a#b","a|b","a?b"]; const out = [];
+     for (const t of tries) { await c.clickEl(`${item(0,0)}.titleEl`); await c.key("a", {ctrl:true}); await c.type(t); await c.key("Enter"); await c.sleep(700);
+       out.push(await c.js(`return {t:${JSON.stringify(t)}, exists: !!T.f("_test/EL refuse.md"), title: ${item(0,0)}.titleEl.textContent, notice: [...document.querySelectorAll(".notice")].map(n=>n.textContent).pop()}`)); await c.js(`document.querySelectorAll(".notice").forEach(n=>n.remove()); T.P().noticeAt=0; return 1`); }
+     // 0/ log without timestamp
+     const log = await c.js(`return app.vault.getMarkdownFiles().find(f=>f.parent?.path==="0" && /^\\d{4}-\\d{2}-\\d{2}-\\d{6}/.test(f.basename))?.path`);
+     await openIn(c, log, 0); await c.clickEl(`${item(0,0)}.titleEl`); await c.key("a", {ctrl:true}); await c.type("no stamp"); await c.key("Enter"); await c.sleep(700);
+     const lr = await c.js(`return {exists: !!T.f(${JSON.stringify(log)}), notice: [...document.querySelectorAll(".notice")].map(n=>n.textContent).pop()}`);
+     const ok = out.every(o=>o.exists && o.title==="EL refuse" && o.notice) && lr.exists && /prefix/.test(lr.notice||"");
+     return { ok, note: JSON.stringify(out.map(o=>o.t+"→"+o.notice))+" log:"+JSON.stringify(lr) }; } },
+ { id: "CD-06", run: async c => { await openIn(c, A, 0); await c.clickEl(`${item(0,0)}.titleEl`); await c.key("ArrowDown"); await c.sleep(300);
+     const r = await c.js(`return {inEditor: !!document.activeElement.closest(".cm-editor"), active: T.active()}`); return { ok: r.inEditor && r.active.startsWith("card:Writing replaces"), note: JSON.stringify(r) }; } },
+ { id: "CD-07", run: async c => { await openIn(c, A, 0); await c.clickEl(`${item(0,0)}.titleEl`, {mods: MOD.ctrl, wait: 1000}); const s = await st(c);
+     return { ok: s.roots.length===2 && s.active.startsWith("card:Writing replaces caching@0"), note: JSON.stringify(s) }; } },
+];

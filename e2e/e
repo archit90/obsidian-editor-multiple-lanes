@@ -1,0 +1,2 @@
+#!/bin/bash
+CDP_PORT=9313 exec node ../../editor-outliner/e2e/cdp.mjs "$1"

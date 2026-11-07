@@ -35,8 +35,22 @@ const ONE_LANE: LayoutColumn[] = [{ width: 100, rows: 1 }];
 export class LanesView extends ItemView {
   /** In layout order: columns left to right, top to bottom within a column. */
   lanes: Lane[] = [];
-  /** The lane of this tab used last (see EditorLanesPlugin.lastLane). */
-  lastLane: Lane | null = null;
+  /** This tab's lanes, most recently used first (see EditorLanesPlugin.lastLane). */
+  private used: Lane[] = [];
+  /** The lane of this tab used last (see EditorLanesPlugin.lastLane); setting null forgets them all. */
+  get lastLane(): Lane | null {
+    return this.used.find(l => this.lanes.includes(l)) ?? null;
+  }
+  set lastLane(lane: Lane | null) {
+    this.used = lane ? [lane, ...this.used.filter(l => l !== lane && this.lanes.includes(l))] : [];
+  }
+  /**
+   * The lane used last other than `lane`, else `lane`: where "last-used lane" opens go when they start in `lane`
+   * (a link followed or Shift-clicked there: the click itself has just made `lane` the last used one).
+   */
+  lastUsedOtherThan(lane: Lane): Lane {
+    return this.used.find(l => l !== lane && this.lanes.includes(l)) ?? lane;
+  }
   /** The tab's own layout, or null: it follows the default in the settings. */
   private override: string | null = null;
   private nameValue: string | null = null;

@@ -42,3 +42,23 @@ export function stateForMode(mode: ViewMode): { mode: "preview" | "source"; sour
 export function toggledState(state: unknown, defaults: ModeDefaults = {}): { mode: "preview" | "source" } {
   return { mode: modeOfState(state, defaults) === "reading" ? "source" : "preview" };
 }
+
+/**
+ * Whether a mounted note's view mode (`current`, as JSON) is its own and should be saved. A note without a mode
+ * of its own (`saved` null) opens in the vault default: that's recorded when its mount finishes (`mounting`:
+ * returns `mounted`) and isn't its own mode; only a change from it is. Before its mount has finished
+ * (`mounted` undefined: a layout-change can come while the editor opens) nothing is saved either.
+ */
+export function ownViewChange(
+  saved: string | null,
+  mounted: string | undefined,
+  current: string,
+  mounting: boolean,
+): { save: boolean; mounted: string | undefined } {
+  if (saved === null) {
+    if (mounting) return { save: false, mounted: current };
+    if (mounted === undefined || mounted === current) return { save: false, mounted };
+    return { save: true, mounted };
+  }
+  return { save: current !== saved, mounted };
+}

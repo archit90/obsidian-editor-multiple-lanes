@@ -1,13 +1,27 @@
-import { App, Keymap, Menu, Notice, Platform, TFile, WorkspaceLeaf, getLinkpath, setIcon } from "obsidian";
+import {
+  App,
+  EditorPosition,
+  Keymap,
+  MarkdownView,
+  Menu,
+  Notice,
+  Platform,
+  TFile,
+  WorkspaceLeaf,
+  WorkspaceSplit,
+  getLinkpath,
+  setIcon,
+} from "obsidian";
 import type EditorLanesPlugin from "./main";
 import type { LanesView } from "./lanes-view";
 import { asEl } from "./dom";
 import { createHostSplit } from "./hosting";
+import { isFar, parkDistance, parkStep } from "./park";
 import { DropEffect, clampIn, linkpathsInText, pickDropEffect } from "./dnd";
 import { noteNameError, tidyName } from "./names";
 import { accordionCollapse, insertIndex, overExpanded, overLimit } from "./tidy";
 import { readView } from "./tab-state";
-import { AddOpts, Item, ItemData, NoteView, Taken, stamp } from "./types";
+import { AddOpts, Item, ItemData, NoteView, Taken, asRecord, stamp } from "./types";
 import {
   MODE_ICONS,
   MODE_TITLES,
@@ -15,11 +29,36 @@ import {
   VIEW_MODES,
   ViewMode,
   modeOfState,
+  ownViewChange,
   stateForMode,
   toggledState,
 } from "./view-mode";
 
 let srHintSeq = 0;
+
+/**
+ * Saves started when a card's editor closed, per note: the next editor for that note (expanding, a card moved to
+ * another lane, back from far away) waits for it, or it would load the text from before the last keystrokes and
+ * show it until the save lands.
+ */
+const saving = new Map<TFile, Promise<unknown>>();
+
+/** Hosted leaves being taken down by the lane itself (their patched detach mustn't close the card). */
+const unmounting = new WeakSet<WorkspaceLeaf>();
+
+/** The sections of Obsidian's own file menu, in its order (app.js, the file explorer's menu). */
+const FILE_MENU_SECTIONS = [
+  "title",
+  "open",
+  "action-primary",
+  "action",
+  "info",
+  "info.copy",
+  "view",
+  "system",
+  "",
+  "danger",
+];
 
 /**
  * One lane of a lanes tab: a column (or a stacked row) holding a scrollable list of note cards, newest on top,
@@ -40,6 +79,20 @@ export class Lane {
   /** Card header heights → `--lane-header-h` on each card (an open search bar sticks right below it). */
   private headerObserver: ResizeObserver | null = null;
   private draining = false;
+  /**
+   * Set when the lane is destroyed: its place in the tab's layout then. An open can pick a lane and then wait
+   * (revealLeaf) while the tab rebuilds its lanes (a background tab loading its saved state): it goes to the lane
+   * now at that place instead, and nothing is ever mounted into a destroyed lane (its editor would stay registered
+   * as a leaf, detached from the page).
+   */
+  private destroyedAt: number | null = null;
+
+  /** The lane that took this destroyed lane's place (else the tab's current lane), or null if the tab is gone. */
+  private successor(): Lane | null {
+    if (this.destroyedAt === null) return this;
+    const next = this.tab.lanes[this.destroyedAt] ?? this.tab.currentLane();
+    return next && next !== this ? next : null;
+  }
 
   constructor(
     readonly tab: LanesView,
@@ -63,6 +116,7 @@ export class Lane {
       () => {
         const host = this.plugin.hostedLeaves.get(this.app.workspace.activeLeaf as WorkspaceLeaf);
         if (host?.lane === this) this.app.workspace.editorSuggest?.reposition();
+        this.wakeParkedSoon();
       },
       { passive: true },
     );
@@ -103,6 +157,7 @@ export class Lane {
 
   /** Detach every hosted leaf and stop observing. Safe to call twice. */
   destroy() {
+    if (this.destroyedAt === null) this.destroyedAt = Math.max(0, this.tab.lanes.indexOf(this));
     for (const it of this.items) this.unmount(it);
     this.items = [];
     this.lazyQueue = [];
@@ -112,6 +167,8 @@ export class Lane {
     this.observerMargin = -1;
     this.headerObserver?.disconnect();
     this.headerObserver = null;
+    if (this.waking) this.el.win.cancelAnimationFrame(this.waking);
+    this.waking = 0;
     if (this.plugin.lastLane === this) this.plugin.lastLane = null;
   }
 
@@ -163,7 +220,8 @@ export class Lane {
     this.observerMargin = margin;
     this.observerWin = this.el.win;
     try {
-      const IO: typeof IntersectionObserver = (this.el.win as any)?.IntersectionObserver ?? IntersectionObserver;
+      // the lane's own window (a popout has its own globals)
+      const IO = (this.el.win as Window & typeof globalThis)?.IntersectionObserver ?? IntersectionObserver;
       this.observer = new IO(
         entries => {
           for (const en of entries) {
@@ -182,7 +240,7 @@ export class Lane {
     this.headerObserver?.disconnect();
     this.headerObserver = null;
     try {
-      const RO: typeof ResizeObserver = (this.el.win as any)?.ResizeObserver ?? ResizeObserver;
+      const RO = (this.el.win as Window & typeof globalThis)?.ResizeObserver ?? ResizeObserver;
       this.headerObserver = new RO(entries => {
         for (const en of entries) {
           const head = en.target as HTMLElement;
@@ -211,6 +269,7 @@ export class Lane {
    * "Keeping lanes tidy" rules run, never touching this note.
    */
   async add(file: TFile, opts: AddOpts = {}) {
+    if (this.destroyedAt !== null) return void (await this.successor()?.add(file, opts));
     this.plugin.lastLane = this;
     let it = this.items.find(i => i.file === file);
     const isNew = !it;
@@ -229,7 +288,7 @@ export class Lane {
     this.afterExpand(it);
     if (opts.index === undefined) this.scrollToItem(it);
     if (opts.focus !== false) this.tab.showLane(this); // phones: switch to this lane
-    const leaf: any = it.leaf;
+    const leaf = it.leaf;
     if (leaf) {
       if (opts.mode && leaf.getViewState().state?.mode !== opts.mode) {
         const vs = leaf.getViewState();
@@ -406,21 +465,26 @@ export class Lane {
     header.addEventListener("contextmenu", e => {
       e.preventDefault();
       const menu = new Menu();
+      // the card's own items first, then Obsidian's file menu (its sections, in its order)
+      menu.addSections?.(["lane-open", "lane-move", "lane-view", "lane-note", ...FILE_MENU_SECTIONS]);
       const at = this.items.indexOf(it);
       menu.addItem(i =>
         i
+          .setSection("lane-open")
           .setTitle("Open in next lane")
           .setIcon("arrow-right")
           .onClick(() => void this.plugin.openInLane(it.file, "next", this, { focus: true })),
       );
       menu.addItem(i =>
         i
+          .setSection("lane-open")
           .setTitle("Open in new lanes tab")
           .setIcon("columns-3")
           .onClick(() => void this.plugin.openInLane(it.file, "newTab", this, { focus: true })),
       );
       menu.addItem(i =>
         i
+          .setSection("lane-move")
           .setTitle("Move to top")
           .setIcon("arrow-up-to-line")
           .setDisabled(at <= 0)
@@ -429,6 +493,7 @@ export class Lane {
       // touch has no reliable way to drag a card a short way: one place up or down (pinned notes stay on top)
       menu.addItem(i =>
         i
+          .setSection("lane-move")
           .setTitle("Move up")
           .setIcon("arrow-up")
           .setDisabled(at <= 0)
@@ -436,6 +501,7 @@ export class Lane {
       );
       menu.addItem(i =>
         i
+          .setSection("lane-move")
           .setTitle("Move down")
           .setIcon("arrow-down")
           .setDisabled(at < 0 || at >= this.items.length - 1)
@@ -443,42 +509,46 @@ export class Lane {
       );
       menu.addItem(i =>
         i
+          .setSection("lane-move")
           .setTitle("Move to previous lane")
           .setIcon("arrow-left")
           .onClick(() => void this.plugin.moveToLane(this, it, -1)),
       );
       menu.addItem(i =>
         i
+          .setSection("lane-move")
           .setTitle("Move to next lane")
           .setIcon("arrow-right")
           .onClick(() => void this.plugin.moveToLane(this, it, 1)),
       );
-      menu.addSeparator();
       const current = modeOfState(this.viewOf(it), this.modeDefaults());
       for (const m of VIEW_MODES) {
         menu.addItem(i =>
           i
+            .setSection("lane-view")
             .setTitle(MODE_TITLES[m])
             .setIcon(MODE_ICONS[m])
             .setChecked(m === current)
             .onClick(() => void this.setView(it, stateForMode(m))),
         );
       }
-      menu.addSeparator();
       menu.addItem(i =>
         i
+          .setSection("lane-note")
           .setTitle("Rename note")
           .setIcon("pencil")
           .onClick(() => window.setTimeout(() => this.editTitle(it, "all"), 0)),
       );
       menu.addItem(i =>
         i
+          .setSection("lane-note")
           .setTitle(it.pinned ? "Unpin" : "Pin")
           .setIcon(it.pinned ? "pin-off" : "pin")
           .onClick(() => this.togglePin(it)),
       );
       menu.addItem(i =>
         i
+          .setSection("lane-note")
           .setTitle("Close")
           .setIcon("x")
           .setDisabled(it.pinned)
@@ -486,6 +556,7 @@ export class Lane {
       );
       menu.addItem(i =>
         i
+          .setSection("lane-note")
           .setTitle("Close others")
           .setIcon("x-circle")
           .onClick(() => {
@@ -552,10 +623,11 @@ export class Lane {
   }
 
   private updateTitle(it: Item) {
-    // the folder prefix is drawn right-to-left (so a long one is cut from the left); the LRM keeps the
-    // trailing "/" on the right of it
+    // the folder prefix is drawn right-to-left (so a long one is cut from the left); the LRMs at both ends keep
+    // it reading left to right: the trailing "/" on the right, a leading "_" or "." ("_test/") on the left
     const showFolder = this.plugin.settings.showFolder;
-    const folder = showFolder && it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/\u200E" : "";
+    const folder =
+      showFolder && it.file.parent && it.file.parent.path !== "/" ? `\u200E${it.file.parent.path}/\u200E` : "";
     it.pathEl.setText(folder);
     it.pathEl.setAttr("title", it.file.path);
     if (it.titleEl.doc.activeElement === it.titleEl) return; // don't overwrite a name being edited
@@ -709,10 +781,10 @@ export class Lane {
       this.plugin.adoptCardView(it.leaf.view); // see main.ts patchCardScrolling
       const view = readView(it.leaf.getViewState().state);
       const json = JSON.stringify(view);
-      // a note without a mode of its own opens in the vault default: that isn't its own mode yet (tweak 40)
-      if (mounting && it.view === null) it.mountedView = json;
-      const followsDefault = it.view === null && it.mountedView === json;
-      if (!followsDefault && json !== JSON.stringify(it.view)) {
+      // a note without a mode of its own opens in the vault default: that isn't its own mode yet (EL-16)
+      const own = ownViewChange(it.view === null ? null : JSON.stringify(it.view), it.mountedView, json, mounting);
+      it.mountedView = own.mounted;
+      if (own.save) {
         it.view = view;
         this.save();
       }
@@ -761,6 +833,7 @@ export class Lane {
    * `focus`: make it the active note (a user's move; not when a layout change merges lanes).
    */
   async insertTaken(d: Taken, index: number, focus = true) {
+    if (this.destroyedAt !== null) return void (await this.successor()?.insertTaken(d, index, focus));
     if (focus) this.plugin.lastLane = this;
     let it = this.items.find(i => i.file === d.file);
     if (it) {
@@ -814,38 +887,125 @@ export class Lane {
         const it = this.lazyQueue.shift()!;
         if (!this.items.includes(it) || it.collapsed || it.leaf) continue;
         // notes mounted before this one may have pushed it out of view; the observer reports it again
-        if (!this.nearView(it.el)) continue;
+        if (!this.nearView(it.el, it.parked ? this.wakeDistance() : undefined)) continue;
+        // a parked card kept its height, so nothing moves when it mounts: start it and go on (a quick scroll back
+        // brings several at once); a new one lays out before the next is measured
+        if (it.parked) {
+          void this.mount(it);
+          continue;
+        }
         await this.mount(it);
-        await new Promise(r => window.setTimeout(r, 16)); // let it lay out before measuring the next
+        await new Promise(r => window.setTimeout(r, 16));
       }
     } finally {
       this.draining = false;
     }
   }
 
-  private nearView(el: HTMLElement): boolean {
+  /** When each mounted card was first seen far from view (EL-19). */
+  private farSince = new WeakMap<Item, number>();
+
+  /**
+   * EL-19: unmount ("park") expanded cards that have been far outside the visible part of the lane for a while
+   * (park.ts), keeping their height, mode, cursor, selection and scroll; the lazy-mount observer mounts them again
+   * within wakeDistance(), before they scroll into view. Undo history survives, as for collapsing (Obsidian keeps
+   * a note's editor history across its editors).
+   * Never the active or focused card, one with unsaved changes or an open search, or one being dragged. A lane that
+   * isn't shown (a background tab) is left alone.
+   */
+  parkFar(now: number) {
+    const v = this.listEl.getBoundingClientRect();
+    if (v.height <= 0 || !this.listEl.isShown()) return;
+    const dist = parkDistance(v.height, this.plugin.settings.preloadDistance);
+    for (const it of [...this.items]) {
+      if (!it.leaf || it.collapsed || !it.ready) {
+        this.farSince.delete(it);
+        continue;
+      }
+      const r = it.el.getBoundingClientRect();
+      const step = parkStep(this.farSince.get(it), isFar(v, r, dist), this.keepMounted(it), now);
+      if (step.since === null) this.farSince.delete(it);
+      else this.farSince.set(it, step.since);
+      if (step.park) this.park(it);
+    }
+  }
+
+  /** A card that must stay mounted however far away it is. */
+  private keepMounted(it: Item): boolean {
+    const leaf = it.leaf;
+    if (!leaf || leaf === this.app.workspace.activeLeaf || this.plugin.dragItem?.item === it) return true;
+    if (it.el.contains(it.el.doc.activeElement)) return true;
+    const view = leaf.view;
+    if (!(view instanceof MarkdownView)) return true;
+    // unsaved changes; an open search bar (editing mode's, or Reading view's in the view's element)
+    const state = view as MarkdownView & { dirty?: boolean; saving?: boolean }; // TextFileView internals
+    if (state.dirty || state.saving || view.editMode?.search?.isActive) return true;
+    const bar = view.containerEl.querySelector<HTMLElement>(".document-search-container");
+    return !!bar && bar.isShown();
+  }
+
+  private waking = 0;
+  /** While the lane scrolls: parked cards coming within wakeDistance() mount (once per frame at most). */
+  private wakeParkedSoon() {
+    if (this.waking || !this.items.some(i => i.parked && !i.leaf)) return;
+    this.waking = this.el.win.requestAnimationFrame(() => {
+      this.waking = 0;
+      const v = this.listEl.getBoundingClientRect();
+      const dist = this.wakeDistance();
+      let any = false;
+      for (const it of this.items) {
+        if (!it.parked || it.leaf || it.collapsed || this.lazyQueue.includes(it)) continue;
+        if (isFar(v, it.el.getBoundingClientRect(), dist)) continue;
+        this.lazyQueue.push(it);
+        any = true;
+      }
+      if (any) void this.drainLazy();
+    });
+  }
+
+  /**
+   * How near the visible part a parked card mounts again: further than the pre-load distance (at least two lane
+   * heights), so a quick scroll doesn't reach it before its editor is back; less than parkDistance.
+   */
+  private wakeDistance(): number {
+    return Math.max(this.plugin.settings.preloadDistance, 2 * this.listEl.clientHeight);
+  }
+
+  private park(it: Item) {
+    const height = it.bodyEl.offsetHeight;
+    const bodyScroll = it.bodyEl.scrollTop;
+    this.unmount(it, true);
+    if (it.pending) it.pending.bodyScroll = bodyScroll;
+    it.parked = true;
+    it.bodyEl.style.minHeight = `${height}px`;
+    this.farSince.delete(it);
+    this.mountLazily(it);
+  }
+
+  private nearView(el: HTMLElement, margin?: number): boolean {
     const r = el.getBoundingClientRect();
     const v = this.listEl.getBoundingClientRect();
-    const m = this.plugin.settings.preloadDistance;
+    const m = margin ?? this.plugin.settings.preloadDistance;
     return v.height > 0 && r.top < v.bottom + m && r.bottom > v.top - m;
   }
 
   /** Create the item's private split + leaf and open the note in it. */
   private mount(it: Item): Promise<void> {
+    if (this.destroyedAt !== null || !this.items.includes(it)) return Promise.resolve();
     if (!it.ready) it.ready = this.doMount(it);
     return it.ready;
   }
 
   private async doMount(it: Item) {
     this.observer?.unobserve(it.el);
-    const ws = this.app.workspace as any;
     const split = createHostSplit(this.app.workspace); // see hosting.ts
-    let leaf: any;
+    let leaf: WorkspaceLeaf;
     try {
-      leaf = new (WorkspaceLeaf as any)(this.app);
+      // WorkspaceLeaf's constructor isn't in the public API: new WorkspaceLeaf(app)
+      leaf = new (WorkspaceLeaf as unknown as new (app: App) => WorkspaceLeaf)(this.app);
       split.insertChild(0, leaf);
     } catch {
-      leaf = ws.createLeafInParent(split, 0);
+      leaf = this.app.workspace.createLeafInParent(split as unknown as WorkspaceSplit, 0);
     }
     it.split = split;
     it.leaf = leaf;
@@ -854,8 +1014,7 @@ export class Lane {
     // Pinned: a link followed from here takes the normal open path (and lanes-only routing), because
     // getUnpinnedLeaf skips leaves that can't navigate. Unpinning is what Ctrl+W does to a pinned leaf in
     // the sidebar, so it closes the card instead; "Toggle pin" does nothing.
-    const origSetPinned = leaf.setPinned?.bind(leaf);
-    origSetPinned?.(true);
+    leaf.setPinned(true);
     leaf.setPinned = (v: boolean) => {
       if (!v && it.leaf === leaf && !it.pinned) this.close(it);
     };
@@ -863,7 +1022,7 @@ export class Lane {
     // "Close tab" / anything else that detaches a hosted note closes the item properly
     const origDetach = leaf.detach.bind(leaf);
     leaf.detach = () => {
-      if (it.leaf === leaf && !leaf.__laneUnmounting) this.close(it);
+      if (it.leaf === leaf && !unmounting.has(leaf)) this.close(it);
       else origDetach();
     };
     // Back / forward (Alt+←/→, the mobile navbar) to an entry for another note (history brought along from a
@@ -876,32 +1035,50 @@ export class Lane {
         const path = entry?.state?.state?.file;
         if (typeof path !== "string" || path === it.file.path) return origUpdate(entry);
         const f = this.app.vault.getFileByPath(path);
-        if (f) await this.plugin.openInLane(f, "same", this, { focus: true, after: it, eState: entry.eState });
+        const eState = asRecord(entry.eState);
+        if (f) await this.plugin.openInLane(f, "same", this, { focus: true, after: it, eState });
       };
     }
     // the tab's window (main or popout), so focusing the note doesn't raise the main window
     leaf.getContainer = () => this.tab.leaf.getContainer();
     // `rename` would act on the (hidden) inline title: edit the card title instead
     const origSetEState = leaf.setEphemeralState.bind(leaf);
-    leaf.setEphemeralState = (e: any) => {
-      if (e?.rename) {
-        const how = e.rename;
-        e = { ...e };
-        delete e.rename;
+    leaf.setEphemeralState = (e: unknown) => {
+      const st = asRecord(e);
+      if (st?.rename) {
+        const { rename: how, ...rest } = st;
         window.setTimeout(() => this.editTitle(it, how), 0); // after any editor focus from the same open
+        return origSetEState(rest);
       }
       return origSetEState(e);
     };
     it.bodyEl.appendChild(split.containerEl);
+    await saving.get(it.file); // the note's last editor is still saving (see `saving`)
+    if (it.leaf !== leaf) return; // unmounted meanwhile
     const pending = it.pending;
     it.pending = null;
     try {
+      // The kept cursor / selection comes back without focusing the editor: MarkdownView's setEphemeralState
+      // focuses it for a `cursor`, and a card mounting as it nears view ("Expand all", back from far away) would
+      // take the focus and the active note from the card being edited. The kept `scroll` (the editor's own,
+      // which doesn't scroll in a card) would scroll the lane instead: dropped.
+      const { cursor, ...eState } = pending?.eState ?? {};
+      delete eState.scroll;
       await leaf.openFile(it.file, {
         active: false,
         state: mountViewState(pending),
-        eState: pending?.eState,
+        eState: Object.keys(eState).length ? eState : undefined,
       });
+      if (cursor) restoreSelection(leaf, cursor);
       this.syncView(it, true);
+      if (it.parked) {
+        // back from far away (EL-19): the editor has laid out at the same height; let go of the kept one
+        it.parked = false;
+        if (pending?.bodyScroll) it.bodyEl.scrollTop = pending.bodyScroll;
+        window.requestAnimationFrame(() => {
+          if (!it.parked) it.bodyEl.style.minHeight = "";
+        });
+      }
     } catch (e) {
       console.error("[editor-lanes] could not open", it.file.path, e);
       it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
@@ -911,13 +1088,21 @@ export class Lane {
   /** Detach the item's hosted leaf. `keep`: remember its mode and cursor for the next mount. */
   private unmount(it: Item, keep = false) {
     this.observer?.unobserve(it.el);
+    if (it.parked) {
+      it.parked = false;
+      it.bodyEl.style.minHeight = "";
+    }
     if (!it.split) return;
     const split = it.split;
-    const leaf: any = it.leaf;
+    const leaf = it.leaf;
     if (keep && leaf) {
       try {
         const st = leaf.getViewState().state ?? {};
-        it.pending = { mode: st.mode, source: st.source, eState: leaf.getEphemeralState() };
+        it.pending = {
+          mode: typeof st.mode === "string" ? st.mode : undefined,
+          source: typeof st.source === "boolean" ? st.source : undefined,
+          eState: leaf.getEphemeralState(),
+        };
       } catch {
         it.pending = null;
       }
@@ -926,12 +1111,24 @@ export class Lane {
     if (leaf) this.plugin.hostedLeaves.delete(leaf);
     // Unhook first: an emptied split removes itself from its parent, and it was never the parent's child.
     split.parent = null; // the setter marks it detached
+    it.mountedView = undefined; // the next mount records the mode it opens with again
     it.split = null;
     it.leaf = null;
     it.ready = null;
     if (leaf) {
+      const view = leaf.view;
+      if (view instanceof MarkdownView && view.file) {
+        const file = view.file;
+        const done = view
+          .save()
+          .catch(() => undefined)
+          .finally(() => {
+            if (saving.get(file) === done) saving.delete(file);
+          });
+        saving.set(file, done);
+      }
       this.plugin.dropSearchKeys(leaf);
-      leaf.__laneUnmounting = true;
+      unmounting.add(leaf);
       this.plugin.detachQuietly(leaf); // no "Undo close tab" entry per hosted note: the lane's own entry restores them
     }
     split.containerEl.remove();
@@ -1111,4 +1308,22 @@ function mountViewState(pending: { mode?: string; source?: boolean } | null): Re
   if (pending.mode) st.mode = pending.mode;
   if (typeof pending.source === "boolean") st.source = pending.source;
   return Object.keys(st).length ? st : undefined;
+}
+
+/** Put back a kept selection ({from, to} as in a MarkdownView's ephemeral state) without focusing or scrolling. */
+function restoreSelection(leaf: WorkspaceLeaf, cursor: unknown) {
+  const view = leaf.view;
+  const c = asRecord(cursor);
+  const from = asRecord(c?.from);
+  const to = asRecord(c?.to) ?? from;
+  if (!(view instanceof MarkdownView) || view.getMode() !== "source" || !from || !to) return;
+  const pos = (p: Record<string, unknown>): EditorPosition => ({ line: Number(p.line) || 0, ch: Number(p.ch) || 0 });
+  try {
+    const ed = view.editor;
+    const last = ed.lastLine();
+    const clamp = (p: EditorPosition) => ed.posToOffset({ line: Math.min(p.line, last), ch: p.ch });
+    ed.cm?.dispatch({ selection: { anchor: clamp(pos(from)), head: clamp(pos(to)) } });
+  } catch {
+    /* a selection that no longer fits the note: leave the default */
+  }
 }

@@ -61,6 +61,8 @@ declare module "obsidian" {
      * tab itself when it's an empty one.
      */
     createLeafInTabGroup(parent?: WorkspaceTabs): WorkspaceLeaf;
+    /** A new leaf at `index` of any parent: a split, or a tab group (a tab at that place). */
+    createLeafInParent(parent: WorkspaceParent, index: number): WorkspaceLeaf;
     /**
      * Mobile only (returns at once on the desktop): marks the active leaf's chain of parents `mod-visible` and
      * takes it off every other split / tab group under rootSplit. On phones, CSS hides main-area splits and tab
@@ -95,6 +97,32 @@ declare module "obsidian" {
     updateHeader?(): void;
     /** Whether the leaf's element is shown (its tab is the selected one, its window open). */
     isVisible(): boolean;
+  }
+
+  interface WorkspaceSplit {
+    /** The split's element (its children's elements inside). */
+    containerEl: HTMLElement;
+    /** Adds `child` at `index` of its children (and its element at that place). */
+    insertChild(index: number, child: WorkspaceItem): void;
+  }
+
+  interface Editor {
+    /** The CodeMirror view behind it (Live Preview / Source mode). */
+    cm?: EditorView;
+    /** The document position under the mouse event, or null. */
+    posAtMouse?(evt: MouseEvent): EditorPosition | null;
+    /** The clickable token (an internal link, a URL, a tag…) at `pos`, or null. */
+    getClickableTokenAt?(pos: EditorPosition): { type: string; text: string } | null;
+  }
+
+  interface WorkspaceTabs {
+    /** Its tabs, in order. */
+    children: WorkspaceLeaf[];
+  }
+
+  interface Menu {
+    /** The order of the menu's sections (items are grouped by section; a separator between groups). */
+    addSections?(sections: string[]): this;
   }
 
   interface Keymap {

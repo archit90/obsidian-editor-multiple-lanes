@@ -1,4 +1,5 @@
 import type { TFile, WorkspaceLeaf } from "obsidian";
+import type { HostSplit } from "./hosting";
 import type { Lane } from "./lane";
 
 /** A lanes tab: one Obsidian tab holding every lane of its layout. */
@@ -11,7 +12,9 @@ export const LEGACY_VIEW_TYPE = "editor-lane";
  */
 export const OLD_NAV_VIEW_TYPE = "editor-lanes-navigator";
 export const SWALLOW_MS = 700; // after a shift-mousedown we handled, ignore the matching mouseup/click
-export const INTENT_MS = 2000; // an open is matched to the getLeaf call that picked its leaf within this time
+export const INTENT_MS = 2000;
+/** How long after the plugin is enabled at runtime its lanes tabs may still be on their way back. */
+export const RESTORE_MS = 5000; // an open is matched to the getLeaf call that picked its leaf within this time
 
 export interface ItemData {
   path: string;
@@ -42,7 +45,9 @@ export interface Taken {
 export interface MountState {
   mode?: string;
   source?: boolean;
-  eState?: any;
+  eState?: Record<string, unknown>;
+  /** "Note height: capped": the card body's own scroll position (a card parked while far away, EL-19). */
+  bodyScroll?: number;
 }
 
 export interface Item {
@@ -59,7 +64,7 @@ export interface Item {
   titleEl: HTMLElement;
   pathEl: HTMLElement;
   bodyEl: HTMLElement;
-  split: any | null; // private WorkspaceSplit holding the leaf (while mounted)
+  split: HostSplit | null; // private WorkspaceSplit holding the leaf (while mounted)
   leaf: WorkspaceLeaf | null;
   ready: Promise<void> | null; // the mount in progress / done
   pending: MountState | null; // applied on the next mount
@@ -69,6 +74,8 @@ export interface Item {
   mountedView?: string;
   /** The mode button's last state, so it's only redrawn when the mode changes. */
   shownMode?: string;
+  /** Unmounted while far from view (EL-19): its body keeps its height until it mounts again. */
+  parked?: boolean;
 }
 
 /** Where an open goes: the last-used lane, the next lane of the source tab, a new lanes tab, or the source lane. */
@@ -88,9 +95,10 @@ export interface Intent {
 /** How a note is added to a lane. `index`: where (a drop point); else where "New notes go" says. */
 export interface AddOpts {
   focus?: boolean;
-  eState?: any;
+  eState?: Record<string, unknown>;
   mode?: string;
-  history?: any;
+  /** A tab's history (WorkspaceLeaf.history.serialize()), for back / forward in the card. */
+  history?: unknown;
   index?: number;
   /** The card this note was opened from, if in the same lane (for "New notes go: right after"). */
   after?: Item | null;
@@ -101,4 +109,9 @@ let lastStamp = 0;
 export function stamp(): number {
   lastStamp = Math.max(Date.now(), lastStamp + 1);
   return lastStamp;
+}
+
+/** `v` as a plain object (an ephemeral state, a view state), else undefined. */
+export function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 }

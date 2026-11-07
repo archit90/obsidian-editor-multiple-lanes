@@ -142,7 +142,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "accordion",
       "Accordion mode",
-      "Opening or expanding a note collapses the other notes in its lane, except pinned ones. A collapsed note's undo history is cleared.",
+      "Opening or expanding a note collapses the other notes in its lane, except pinned ones.",
       "none",
     );
     this.number(
@@ -156,7 +156,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "autoCollapseAfter",
       "Auto-collapse after this many expanded",
-      "With more notes expanded than this, the least recently opened ones (not pinned) collapse, which clears their undo history. 0 = off",
+      "With more notes expanded than this, the least recently opened ones (not pinned) collapse. 0 = off",
       "none",
     );
 
@@ -197,7 +197,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "preloadDistance",
       "Pre-load distance",
-      "Expanded notes this many pixels outside the visible part of a lane are loaded ahead of time",
+      "Expanded notes this many pixels outside the visible part of a lane are loaded ahead of time. Notes a few lane heights away unload after a few seconds (keeping their place, cursor and scroll) and load again before they come back into view",
       "looks",
     );
 

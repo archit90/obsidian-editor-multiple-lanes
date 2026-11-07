@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isViewMode, modeOfState, stateForMode, toggledState } from "./view-mode";
+import { isViewMode, modeOfState, ownViewChange, stateForMode, toggledState } from "./view-mode";
 
 describe("modeOfState", () => {
   it("reads Obsidian's mode / source fields", () => {
@@ -32,5 +32,24 @@ describe("stateForMode / toggledState", () => {
     expect(isViewMode("live")).toBe(true);
     expect(isViewMode("preview")).toBe(false);
     expect(isViewMode(undefined)).toBe(false);
+  });
+});
+
+describe("ownViewChange", () => {
+  const lp = JSON.stringify({ mode: "source", source: false });
+  const rd = JSON.stringify({ mode: "preview" });
+  it("records the mode a note without its own opens with, without saving it", () => {
+    expect(ownViewChange(null, undefined, lp, true)).toEqual({ save: false, mounted: lp });
+  });
+  it("doesn't save before the mount has finished (a layout-change while the editor opens)", () => {
+    expect(ownViewChange(null, undefined, lp, false)).toEqual({ save: false, mounted: undefined });
+  });
+  it("saves a change from the mode it opened with", () => {
+    expect(ownViewChange(null, lp, rd, false)).toEqual({ save: true, mounted: lp });
+    expect(ownViewChange(null, lp, lp, false).save).toBe(false);
+  });
+  it("saves a note's own mode only when it changes", () => {
+    expect(ownViewChange(rd, undefined, rd, true).save).toBe(false);
+    expect(ownViewChange(rd, undefined, lp, false).save).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import {
   Component,
+  FileView,
   MarkdownEditMode,
   MarkdownView,
   Menu,
@@ -26,10 +27,12 @@ import { around } from "monkey-around";
 import { DEFAULTS, Settings, loadSettings } from "./config";
 import { asEl } from "./dom";
 import { Matcher, compileExceptions } from "./exceptions";
+import { HostSplit } from "./hosting";
 import { Lane } from "./lane";
 import { LanesView, LegacyLaneView, OldNavigatorView } from "./lanes-view";
 import { wrapStep } from "./layout";
 import { NotePicker } from "./note-picker";
+import { PARK_CHECK_MS } from "./park";
 import { LanesSettingTab, Refresh } from "./settings";
 import { pickTabName } from "./tab-names";
 import { savedTabName } from "./tab-state";
@@ -41,12 +44,13 @@ import {
   Item,
   LEGACY_VIEW_TYPE,
   OLD_NAV_VIEW_TYPE,
+  RESTORE_MS,
   SWALLOW_MS,
   VIEW_TYPE,
   Where,
 } from "./types";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- monkey-around wrappers of Obsidian internals: each wrapper declares its own parameter types, which neither unknown[] (not assignable from them) nor never[] (not callable with the original's arguments) allows
 type AnyFn = (...args: any[]) => any;
 /** For around() on methods whose (overloaded) public types don't fit a wrapper that also returns null. */
 const loose = (o: object) => o as unknown as Record<string, AnyFn>;
@@ -161,7 +165,7 @@ export default class EditorLanesPlugin extends Plugin {
   /** "Exceptions to lanes only", compiled from the setting. */
   private isException: Matcher = () => false;
   /** Every private split / hosted leaf, for the iterateLeaves patch and for not routing our own opens. */
-  splits = new Set<any>();
+  splits = new Set<HostSplit>();
   hostedLeaves = new Map<WorkspaceLeaf, { lane: Lane; item: Item }>();
   private _lastLane: Lane | null = null;
   /** Lanes tabs, most recently active first. */
@@ -182,6 +186,14 @@ export default class EditorLanesPlugin extends Plugin {
   private requestSweep = debounce(() => void this.sweepMainArea(false), 250, true);
   requestLegacyCleanup = debounce(() => void this.closeLegacy().then(() => this.closeOldNavigator()), 100, true);
   private noticeAt = 0;
+  /**
+   * Lanes tabs Obsidian is putting back after the plugin was enabled at runtime: registerView makes it reopen
+   * each "plugin not active" placeholder as an empty view and then as a lanes tab with its saved state. In
+   * between it looks like an empty tab, and turning it into a new lanes tab (the sweep) would make Obsidian's
+   * own setViewState a no-op (the leaf is `working`): the tab would come back empty, with a new name.
+   */
+  private restoring = new WeakSet<WorkspaceLeaf>();
+  private restoringUntil = 0;
 
   /** The lane used last, in any tab (setting it also makes it its tab's last-used lane and that tab the most recent). */
   get lastLane(): Lane | null {
@@ -199,6 +211,10 @@ export default class EditorLanesPlugin extends Plugin {
     this.settings = loadSettings(await this.loadData());
     this.isException = compileExceptions(this.settings.routeExceptions);
     this.addSettingTab(new LanesSettingTab(this.app, this));
+    if (this.app.workspace.layoutReady) {
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) this.restoring.add(leaf);
+      this.restoringUntil = Date.now() + RESTORE_MS;
+    }
     this.registerView(VIEW_TYPE, leaf => new LanesView(leaf, this));
     this.registerView(LEGACY_VIEW_TYPE, leaf => new LegacyLaneView(leaf, this));
     this.registerView(OLD_NAV_VIEW_TYPE, leaf => new OldNavigatorView(leaf, this));
@@ -212,7 +228,16 @@ export default class EditorLanesPlugin extends Plugin {
     this.patchRevealLeaf();
     this.patchMobileVisibility();
     this.patchMobileFocus();
+    this.patchCardDelete();
     this.setupCaretVisibility();
+
+    // EL-19: expanded cards far from view are unmounted after a while (Lane.parkFar)
+    this.registerInterval(
+      window.setInterval(() => {
+        const now = Date.now();
+        for (const tab of this.allTabs()) for (const lane of tab.lanes) lane.parkFar(now);
+      }, PARK_CHECK_MS),
+    );
 
     this.addRibbonIcon("columns-3", "New lanes tab", () => void this.newLanesTab());
     this.addCommand({ id: "new-lane", name: "New lanes tab", callback: () => void this.newLanesTab() });
@@ -288,14 +313,17 @@ export default class EditorLanesPlugin extends Plugin {
     // right-click on a file (explorer, tab, link, search result…); on mobile a long-press, including on a link
     // in a note (Obsidian's link-context-menu triggers file-menu): the touch way to do what Shift-click does
     this.registerEvent(
-      this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
-        if (!(file instanceof TFile) || file.extension !== "md") return;
+      this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile, source: string, leaf?: WorkspaceLeaf) => {
+        // the card menu has its own "Open in next lane" / "Open in new lanes tab"
+        if (!(file instanceof TFile) || file.extension !== "md" || source === "editor-lanes") return;
+        // a link's menu in a card (touch: a long-pressed link) does what Shift-click on it does
+        const from = source === "link-context-menu" && leaf ? (this.hostedLeaves.get(leaf)?.lane ?? null) : null;
         menu.addItem(i =>
           i
             .setTitle("Open in editor lane")
             .setIcon("columns-3")
             .setSection("open")
-            .onClick(() => void this.openInLane(file, "last")),
+            .onClick(() => void this.openInLane(file, "last", from)),
         );
         menu.addItem(i =>
           i
@@ -486,7 +514,7 @@ export default class EditorLanesPlugin extends Plugin {
           if (this.hostedLeaves.has(leaf) || leaf.view instanceof LanesView) return;
           const vs = leaf.getViewState(); // also right for deferred (not yet loaded) background tabs
           if (vs.type === VIEW_TYPE || vs.type === LEGACY_VIEW_TYPE) return;
-          if (this.routing.has(leaf) || this.freshIntent(leaf)) {
+          if (this.routing.has(leaf) || this.freshIntent(leaf) || this.isRestoring(leaf)) {
             retry = true; // about to be routed
             return;
           }
@@ -494,7 +522,7 @@ export default class EditorLanesPlugin extends Plugin {
           this.seen.add(leaf);
           if (vs.pinned || leaf.group) return;
           if (vs.type === "markdown") {
-            const f = this.app.vault.getAbstractFileByPath(String((vs.state as any)?.file ?? ""));
+            const f = this.app.vault.getAbstractFileByPath(String(vs.state?.file ?? ""));
             if (!(f instanceof TFile) || this.isExcepted(f)) return;
             tabs.push({ leaf, file: f, opts: this.tabState(leaf) });
           } else if (vs.type === "empty") {
@@ -528,7 +556,8 @@ export default class EditorLanesPlugin extends Plugin {
   /** A tab's mode, scroll / cursor and history, for reopening its note in a lane. */
   private tabState(leaf: WorkspaceLeaf): AddOpts {
     const vs = leaf.getViewState();
-    const opts: AddOpts = { mode: (vs.state as any)?.mode };
+    const mode = vs.state?.mode;
+    const opts: AddOpts = { mode: typeof mode === "string" ? mode : undefined };
     try {
       opts.eState = leaf.getEphemeralState();
     } catch {
@@ -612,8 +641,19 @@ export default class EditorLanesPlugin extends Plugin {
     }
   }
 
+  /**
+   * The card commands act on: the active one, or with a lanes tab active, its current card (as
+   * getActiveViewOfType answers). Closing the command palette makes the lanes tab active for a moment before its
+   * card takes over again (activeCardFor), and the palette runs the command in between.
+   */
+  private activeCard(): WorkspaceLeaf | null {
+    const leaf = this.app.workspace.activeLeaf;
+    return leaf?.view instanceof LanesView ? this.cardOfTab(leaf.view) : leaf;
+  }
+
   private withHostedItem(checking: boolean, fn: (lane: Lane, it: Item) => unknown): boolean {
-    const h = this.hostedLeaves.get(this.app.workspace.activeLeaf as WorkspaceLeaf);
+    const card = this.activeCard();
+    const h = card ? this.hostedLeaves.get(card) : undefined;
     if (!h) return false;
     if (!checking) void fn(h.lane, h.item);
     return true;
@@ -686,13 +726,19 @@ export default class EditorLanesPlugin extends Plugin {
           async function (this: WorkspaceLeaf, file: TFile, openState?: OpenViewState) {
             const host = plugin.hostedLeaves.get(this);
             const tab = host ? host.lane.tab : this.view instanceof LanesView ? this.view : null;
-            if (
-              tab &&
-              file instanceof TFile &&
-              file !== host?.item.file &&
-              (file.extension !== "md" || plugin.isExcepted(file))
-            ) {
+            const notInLane = file instanceof TFile && (file.extension !== "md" || plugin.isExcepted(file));
+            if (tab && notInLane && file !== host?.item.file) {
               return plugin.openBeside(tab, file, openState);
+            }
+            // A plain open from a card (a link to a PDF, a canvas, an exception): Obsidian picked some other tab
+            // to replace (getUnpinnedLeaf: cards and lanes tabs can't navigate), or made one before the lanes tab.
+            // Like a link followed in a tab opening in that tab, it opens in a tab of its own right after the
+            // lanes tab, and replaces nothing.
+            const intent = !tab && notInLane ? plugin.freshIntent(this) : null;
+            if (intent?.from && !intent.paneType && plugin.inMainArea(this)) {
+              await plugin.openBeside(intent.from.tab, file, openState);
+              plugin.dropUsedLeaf(this);
+              return;
             }
             if (!plugin.shouldRoute(this, file)) return next.call(this, file, openState);
             try {
@@ -897,6 +943,23 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   // ---------- native editor features in cards (in-note search, scrolling to a line) ----------
+
+  /**
+   * A card's note deleted: its lane closes the card (Lane.onFileDeleted). The view's own onDelete would go back in
+   * its history or empty the leaf and then read `leaf.parent.children`, which a card's leaf hasn't got (a
+   * TypeError). Patched on the prototype: FileView binds onDelete when the view loads.
+   */
+  private patchCardDelete() {
+    this.register(
+      around(loose(MarkdownView.prototype), {
+        onDelete: next =>
+          async function (this: MarkdownView & { __laneCard?: boolean }, file: TFile) {
+            if (this.__laneCard && file === this.file) return;
+            return next.call(this, file);
+          },
+      }),
+    );
+  }
 
   /** The hosted card whose note view this editing mode / Reading view renderer belongs to. */
   private cardOf(part: MarkdownEditMode | PreviewRenderer): { lane: Lane; item: Item } | undefined {
@@ -1170,21 +1233,38 @@ export default class EditorLanesPlugin extends Plugin {
 
   // ---------- routing ----------
 
-  private freshIntent(leaf: WorkspaceLeaf): Intent | null {
+  freshIntent(leaf: WorkspaceLeaf): Intent | null {
     const i = this.intents.get(leaf);
     return i && Date.now() - i.at < INTENT_MS ? i : null;
   }
 
-  /** The lane the user's last mouse / key input was in, if it's in `leaf`'s lanes tab (a link followed there). */
+  /**
+   * Where the user's input is: the target of the key / mouse event being handled right now, else of the last one.
+   * Obsidian's hotkeys and modals (the quick switcher's Enter) act in a keydown listener on the window, capture
+   * phase, which runs before the document listeners that record `lastInput`: without the current event, a note
+   * chosen in the quick switcher would count as opened from the lane clicked last (and go to the next lane).
+   */
+  private inputTarget(): Node | null {
+    const ev = (activeWindow as Window & { event?: Event }).event;
+    const t = ev && /^(key|mouse|pointer|click|auxclick|touch|drop)/.test(ev.type) ? (ev.target as Node | null) : null;
+    if (t && typeof t.nodeType === "number") this.lastInput = t;
+    return this.lastInput;
+  }
+
+  /**
+   * The lane whose card the user's last mouse / key input was in, if it's in `leaf`'s lanes tab (a link followed
+   * there). A click on a lane's background isn't one: an open after it (a hotkey, a plugin) goes to that lane as
+   * the last-used one, not to the lane after it.
+   */
   private inputLane(leaf: WorkspaceLeaf | null): Lane | null {
     const tab = this.tabOf(leaf);
-    const t = this.lastInput;
-    return (tab && t && tab.lanes.find(l => l.el.contains(t))) || null;
+    const t = this.inputTarget();
+    return (tab && t && tab.lanes.find(l => l.items.some(i => i.el.contains(t)))) || null;
   }
 
   /** The card in `lane` that the user's last mouse / key input was in. */
   inputItem(lane: Lane): Item | null {
-    const t = this.lastInput;
+    const t = this.inputTarget();
     return (t && lane.items.find(i => i.el.contains(t))) || null;
   }
 
@@ -1197,7 +1277,7 @@ export default class EditorLanesPlugin extends Plugin {
     return this.inMainArea(leaf);
   }
 
-  async route(leaf: WorkspaceLeaf, file: TFile, openState?: any) {
+  async route(leaf: WorkspaceLeaf, file: TFile, openState?: OpenViewState) {
     const intent = this.freshIntent(leaf);
     this.intents.delete(leaf);
     this.routing.add(leaf);
@@ -1208,18 +1288,28 @@ export default class EditorLanesPlugin extends Plugin {
     }
   }
 
-  private async routeInner(leaf: WorkspaceLeaf, file: TFile, openState: any, intent: Intent | null) {
+  private async routeInner(
+    leaf: WorkspaceLeaf,
+    file: TFile,
+    openState: OpenViewState | undefined,
+    intent: Intent | null,
+  ) {
     const ws = this.app.workspace;
     const host = this.hostedLeaves.get(leaf);
     const from = host ? host.lane : intent ? intent.from : this.inputLane(ws.activeLeaf);
     const fromItem = host ? host.item : intent ? intent.fromItem : from ? this.inputItem(from) : null;
     const p = intent?.paneType;
-    const wantNew = !host && (p === "tab" || p === true || p === "split" || p === "window");
+    // A new note (Ctrl/Cmd+N "Create new note", Templater, the explorer's button: opened with its title to name,
+    // eState.rename) goes to a lane like any other open, whatever pane it asked for: Obsidian puts it in a new tab
+    // only so the current note stays open, which a lane does too. Ctrl/Cmd-click and the like still give a new
+    // lanes tab.
+    const creating = !!openState?.eState?.rename;
+    const wantNew = !host && !creating && (p === "tab" || p === true || p === "split" || p === "window");
     // like WorkspaceLeaf.openFile: `active` defaults to whether the picked leaf is the active one
     const opts: AddOpts = {
       focus: openState?.active ?? leaf === ws.activeLeaf,
       eState: openState?.eState,
-      mode: openState?.state?.mode,
+      mode: typeof openState?.state?.mode === "string" ? openState.state.mode : undefined,
       after: fromItem,
     };
     // opened into a lanes tab itself: from one of its lanes, as a link followed there ("same" / "next");
@@ -1240,7 +1330,7 @@ export default class EditorLanesPlugin extends Plugin {
     if (
       !host &&
       this.isEmptyMainLeaf(leaf) &&
-      (wantNew || intent?.wasActive || !this.recentTabIn(leaf.getContainer()))
+      (wantNew || (intent?.wasActive && !creating) || !this.recentTabIn(leaf.getContainer()))
     ) {
       const tab = await this.newTab(leaf);
       if (!tab?.lanes[0]) throw new Error("no lane to open in"); // route() then opens it normally
@@ -1254,7 +1344,7 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   /** The tab Obsidian picked (or made) for a routed open is now unused: close it if it's empty and not alone. */
-  private dropUsedLeaf(leaf: WorkspaceLeaf) {
+  dropUsedLeaf(leaf: WorkspaceLeaf) {
     if (!this.isEmptyMainLeaf(leaf)) return;
     let n = 0;
     this.app.workspace.iterateLeaves(leaf.getContainer() as unknown as WorkspaceItem, () => {
@@ -1265,8 +1355,17 @@ export default class EditorLanesPlugin extends Plugin {
 
   private isEmptyMainLeaf(leaf: WorkspaceLeaf): boolean {
     return (
-      !this.hostedLeaves.has(leaf) && !!leaf.parent && leaf.view?.getViewType() === "empty" && this.inMainArea(leaf)
+      !this.hostedLeaves.has(leaf) &&
+      !!leaf.parent &&
+      leaf.view?.getViewType() === "empty" &&
+      !this.isRestoring(leaf) &&
+      this.inMainArea(leaf)
     );
+  }
+
+  /** A lanes tab Obsidian is still putting back (see `restoring`). */
+  private isRestoring(leaf: WorkspaceLeaf): boolean {
+    return Date.now() < this.restoringUntil && this.restoring.has(leaf) && !(leaf.view instanceof LanesView);
   }
 
   /** In a window's main area (the main window's, or a popout's), not a sidebar. */
@@ -1404,7 +1503,7 @@ export default class EditorLanesPlugin extends Plugin {
 
   /** The lane commands act on: the active one, else the one opens go to. */
   currentLane(): Lane | null {
-    return this.laneOfLeaf(this.app.workspace.activeLeaf) ?? this.targetLane();
+    return this.laneOfLeaf(this.activeCard()) ?? this.laneOfLeaf(this.app.workspace.activeLeaf) ?? this.targetLane();
   }
 
   /** The lanes tab commands act on: the active one, else the one opens go to. */
@@ -1425,6 +1524,7 @@ export default class EditorLanesPlugin extends Plugin {
   /** Pick the lane for an open (making a lanes tab where needed). */
   private async laneFor(where: Where, from: Lane | null): Promise<Lane | null> {
     if (where === "same" && from) return from;
+    if (where === "last" && from) return from.tab.lastUsedOtherThan(from);
     if (where === "next" && from) return wrapStep(from.tab.lanes, from, 1);
     if (where === "newTab") {
       const tab = await this.newTab(undefined, from ? from.tab.leaf.getContainer() : undefined);
@@ -1476,13 +1576,16 @@ export default class EditorLanesPlugin extends Plugin {
   }
 
   /**
-   * An exception (or a file that isn't a note) opened from a card or into a lanes tab: a normal tab in the lanes
-   * tab's tab group, else wherever Obsidian puts a new tab.
+   * An exception (or a file that isn't a note) opened from a card or into a lanes tab: a normal tab right after the
+   * lanes tab in its tab group, else wherever Obsidian puts a new tab.
    */
   async openBeside(tab: LanesView, file: TFile, openState?: OpenViewState) {
     const ws = this.app.workspace;
     const group = tab.leaf.parent;
-    const leaf = group instanceof WorkspaceTabs ? ws.createLeafInTabGroup(group) : ws.getLeaf("tab");
+    const leaf =
+      group instanceof WorkspaceTabs
+        ? ws.createLeafInParent(group, group.children.indexOf(tab.leaf) + 1)
+        : ws.getLeaf("tab");
     await leaf.openFile(file, { ...openState, active: true });
   }
 
@@ -1551,7 +1654,8 @@ export default class EditorLanesPlugin extends Plugin {
     if (card) return card.getAttribute("data-bfv-path") ?? "";
     let path = "";
     this.app.workspace.iterateAllLeaves(leaf => {
-      if (!path && leaf.view.containerEl.contains(el)) path = (leaf.view as any).file?.path ?? "";
+      if (!path && leaf.view instanceof FileView && leaf.view.containerEl.contains(el))
+        path = leaf.view.file?.path ?? "";
     });
     return path;
   }
@@ -1571,14 +1675,15 @@ export default class EditorLanesPlugin extends Plugin {
       // Live Preview: ask the editor what's under the mouse. Source mode keeps Shift-click = extend selection.
       this.app.workspace.iterateAllLeaves(leaf => {
         if (link !== null || !leaf.view.containerEl.contains(el)) return;
-        const view = leaf.view as any;
-        if (view.getState?.()?.source === true) {
+        const view = leaf.view;
+        if (!(view instanceof MarkdownView)) return;
+        if (view.getState().source === true) {
           link = "";
           return;
         }
         const editor = view.editor;
         try {
-          const pos = editor?.posAtMouse?.(e);
+          const pos = editor.posAtMouse?.(e);
           const tok = pos ? editor.getClickableTokenAt?.(pos) : null;
           if (tok?.type === "internal-link" && tok.text) link = tok.text;
         } catch {
@@ -1593,6 +1698,9 @@ export default class EditorLanesPlugin extends Plugin {
     e.preventDefault();
     e.stopImmediatePropagation();
     this.swallow = { until: Date.now() + SWALLOW_MS, el };
-    void this.openInLane(dest, e.altKey ? "newTab" : "last");
+    const from = this.allTabs()
+      .flatMap(t => t.lanes)
+      .find(l => l.el.contains(el));
+    void this.openInLane(dest, e.altKey ? "newTab" : "last", from ?? null);
   }
 }
