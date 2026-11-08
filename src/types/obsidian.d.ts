@@ -1,5 +1,6 @@
-// Obsidian internals Editor Lanes relies on (not in the public API). Checked against Obsidian 1.15.0's
-// app.js; see the comment at the top of main.ts for how they're used.
+// Obsidian internals Editor Multiple Lanes relies on (not in the public API). Checked against Obsidian 1.15.0's
+// app.js; see the comment at the top of main.ts for how they're used. The methods it patches or must call are
+// checked at load (hosting.ts probeInternals, compat.ts): if one is missing, the plugin patches nothing.
 import "obsidian";
 import type { EditorView } from "@codemirror/view";
 
@@ -47,10 +48,8 @@ declare module "obsidian" {
   }
 
   interface Workspace {
-    /** Holds the popout windows (WorkspaceWindow, `type` "window"); a popout leaf's getRoot() is this. */
-    floatingSplit: WorkspaceParent & {
-      children: (WorkspaceParent & { doc?: Document; win?: Window | null; type?: string })[];
-    };
+    /** Holds the popout windows (WorkspaceWindow children); a popout leaf's getRoot() is this. */
+    floatingSplit: WorkspaceFloating & { children: WorkspaceItem[] };
     /** Walks `root`'s children; the callback returning true stops the walk. Also called as (cb, root). */
     iterateLeaves(root: WorkspaceItem, cb: (leaf: WorkspaceLeaf) => boolean | void): boolean;
     iterateLeaves(cb: (leaf: WorkspaceLeaf) => boolean | void, root: WorkspaceItem): boolean;

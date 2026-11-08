@@ -1,9 +1,17 @@
-import { A, B, C, D, openIn, clickLine, st, eq, headerClick } from "./common.mjs";
+// Mobile, emulated (app.emulateMobile): tablet size first, then a phone-sized window (MO-02 on), then back to the
+// desktop (MO-09). The hooks put the desktop and the window size back even when a case fails.
+import { A, B, C, D, openIn, clickLine, tA, tC, tD } from "./common.mjs";
+import { WINDOW } from "./config.mjs";
+import { emulateMobile, resize } from "./lib.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
-const resize = (c, w, h) =>
-  c.js(
-    `const r=require("electron").remote||require("@electron/remote"); r.getCurrentWindow().setBounds({x:0,y:0,width:${w},height:${h}}); await T.sleep(1200); return innerWidth+"x"+innerHeight+" phone="+document.body.classList.contains("is-phone")`,
-  );
+export async function before(c) {
+  await resize(c, WINDOW.width, WINDOW.height);
+  await emulateMobile(c, true);
+}
+export async function after(c) {
+  await emulateMobile(c, false);
+  await resize(c, WINDOW.width, WINDOW.height);
+}
 export const cases = [
   {
     id: "MO-01",
@@ -86,7 +94,7 @@ export const cases = [
         ok:
           r.titles?.includes("Open in editor lane") &&
           r.titles.includes("Open in new lanes tab") &&
-          r.lanes.flat().includes("Writing delays interfaces"),
+          r.lanes.flat().includes(tC),
         note: JSON.stringify(r),
       };
     },
@@ -105,12 +113,7 @@ export const cases = [
         `app.workspace.duplicateLeaf(app.workspace.getLeavesOfType("editor-lanes")[0], "window"); await T.sleep(1000); return {tabs: T.tabs().length, pop: app.workspace.floatingSplit.children.length}`,
       );
       return {
-        ok:
-          r.pop === 0 &&
-          r.tabs.length === 2 &&
-          r.tabs[1][0][0] === "Writing replaces caching" &&
-          r2.tabs === 3 &&
-          r2.pop === 0,
+        ok: r.pop === 0 && r.tabs.length === 2 && r.tabs[1][0][0] === tA && r2.tabs === 3 && r2.pop === 0,
         note: JSON.stringify({ cmdExists, r, r2 }),
       };
     },
@@ -192,7 +195,25 @@ export const cases = [
       }
       const r = await c.js(`return {drawerClosed: app.workspace.leftSplit.collapsed, st: T.st()}`);
       return {
-        ok: open0 && r.drawerClosed && r.st.lanes.flat().includes("Vocabulary predicts money"),
+        ok: open0 && r.drawerClosed && r.st.lanes.flat().includes(tD),
+        note: JSON.stringify(r),
+      };
+    },
+  },
+  {
+    id: "MO-09",
+    run: async c => {
+      // back to the desktop: the desktop look, no leftovers
+      await emulateMobile(c, false);
+      await resize(c, WINDOW.width, WINDOW.height);
+      await c.prep();
+      await c.js("await T.reset(); return 1");
+      await openIn(c, A, 0);
+      const r = await c.js(
+        `const it=${item(0, 0)}; const t=T.tab(); return {mobile: document.body.classList.contains("is-mobile"), phone: document.body.classList.contains("is-phone"), editable: it.titleEl.contentEditable, hdr: it.el.querySelector(".lane-item-header").offsetHeight, switcher: getComputedStyle(t.contentEl.querySelector(".lanes-switcher")).display, cols: t.contentEl.querySelectorAll(".lanes-col").length, errs: window.__errs}`,
+      );
+      return {
+        ok: !r.mobile && !r.phone && r.editable === "true" && r.hdr < 40 && r.switcher === "none" && r.cols === 3,
         note: JSON.stringify(r),
       };
     },

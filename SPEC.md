@@ -53,8 +53,9 @@ editable notes ("cards").
   compact.
 - **Renaming:** clicking the name edits it (desktop); Enter or clicking away renames the file (links
   update), Escape cancels, ↓ moves into the note, paste inserts plain text. Refused with a notice: `\ / : #
-^ [ ] | * " < > ?`, a leading dot, `.md`, a name taken in the folder, and a `0/` log name without its
-  timestamp prefix. Ctrl/Cmd-click on the name opens the note in a new lanes tab. On touch, a tap toggles
+^ [ ] | * " < > ?`, a leading dot, `.md`, a name taken in the folder, and, with "Keep a date-time prefix when
+  renaming" on, a new name without a leading `YYYY-MM-DD-HHmmss` date-time for a note whose name starts with one
+  (any folder). Ctrl/Cmd-click on the name opens the note in a new lanes tab. On touch, a tap toggles
   the card and "Rename note" in the card menu makes the name editable.
 - **View mode** per card: the header button toggles Reading view and editing (back to the card's last
   editing kind); the card menu has Reading view, Live Preview and Source mode. A card without its own mode
@@ -63,7 +64,7 @@ editable notes ("cards").
 - **Collapsing** a card unmounts its editor; mode, cursor, selection and undo history come back on expand
   (Obsidian keeps a note's editor history). Expanded cards mount lazily as they come within "Pre-load
   distance" of the visible part of the lane.
-- **Far-away cards** (EL-19): an expanded card that has been more than three lane heights (and well beyond
+- **Far-away cards:** an expanded card that has been more than three lane heights (and well beyond
   the pre-load distance) outside the visible part for 5 s is unmounted, keeping its height, mode, cursor,
   selection, folds and scroll; it mounts again within two lane heights, before it scrolls back into view.
   Never the active or focused card, one with unsaved changes or an open search, or one being dragged.
@@ -93,6 +94,10 @@ editable notes ("cards").
 - **A link followed in a card** goes to the next lane of its tab (columns left to right, top to bottom in a
   column, wrapping from the last lane to the first; with one lane, the same lane). Setting: next lane, same
   lane, or the tab's last-used lane (the lane used last before the one the link is in).
+- **Only a link followed in a card** (a click in Live Preview or Reading view, "Follow link under cursor", a link
+  in another plugin's pane under the card: anything Obsidian opens through `workspace.openLinkText`) counts as
+  coming from that card's lane. A new note, a template or a command that opens a note while the caret is in a
+  card is an open from outside lanes.
 - **Opens from outside lanes** (explorer, quick switcher, search, Shift-click) go to the last-used lane of
   the active lanes tab, else of the window's most recent lanes tab, else a new lanes tab. A click on a lane's
   background makes it the last-used lane. A new note (Ctrl/Cmd+N, the explorer's New note, Templater) goes
@@ -156,6 +161,7 @@ editable notes ("cards").
   (off).
 - **Looks:** show folder in note headers on; header size comfortable; note height grow to content (or cap
   at 600 px and scroll inside the card).
+- **Renaming:** keep a date-time prefix when renaming on.
 - **Performance:** show backlinks panes under lane notes on; pre-load distance 300 px (far-away cards also
   unload and reload, see Cards).
 - **Drag and drop:** dropping a note or link onto a note's text: insert a link.
@@ -175,7 +181,12 @@ editor lane · Move the current note to the next / previous editor lane · Toggl
 - Disabling and re-enabling the plugin brings every lanes tab back with its notes.
 - **Old layouts:** the one-lane-per-tab view type `editor-lane` and the removed Navigator tab
   (`editor-lanes-navigator`) are registered as stubs that close those tabs without "plugin no longer
-  active" placeholders; a window left without a lanes tab gets one.
+  active" placeholders; a window left without a lanes tab gets one. (Open item: kept while the author's vaults
+  may still hold such tabs; to remove later.)
+- **Obsidian internals check:** at load the plugin checks the internals it needs (the methods it patches or
+  calls, and that a leaf in a private split can be made, reads as attached and comes out again). If one is
+  missing it patches nothing, says so in one notice, notes open in normal tabs, and lanes tabs load as stubs that
+  keep their saved state and list their notes.
 
 ## Known limits
 
@@ -193,7 +204,26 @@ editor lane · Move the current note to the next / previous editor lane · Toggl
 
 ## Working with other plugins
 
-TODO (filled in from the cross-plugin review).
+Every pairing is optional and goes through the DOM or Obsidian's own API, never an import or a call into the
+other plugin.
+
+- **Backlinks Full View:** while "Show backlinks panes under lane notes" is off, every lanes tab's `.lanes-view`
+  element carries `data-bfv-skip="editor-lanes"` (tabs made later and tabs in popouts too), and each change of
+  the setting fires `layout-change`; BFV skips note views inside such an element. A Shift-clicked link inside an
+  element with `data-bfv-path` is resolved from that note. A plain click on a link in a BFV pane under a card is a
+  link followed in that card (BFV opens it with `workspace.openLinkText`). Card editors force their own bottom
+  padding (none), which BFV keeps. Lanes never styles BFV's elements.
+- **Card leaves** are ordinary markdown leaves: in `iterateAllLeaves` / `getLeavesOfType("markdown")`, inside the
+  lanes tab's `.lanes-view` (and `.workspace-leaf-content[data-type="editor-lanes"]`); a view state set on them
+  directly is picked up (mode button, saved mode). New notes from Templater or Editor Defaults (opened with
+  `eState.rename`) go to the last-used lane, and the new card is the active editor at once.
+- **Test API for other plugins' test suites** (nothing else): the plugin instance's `settings.lanesOnly`,
+  `settings.showBacklinks`, `settings.routeExceptions`, then `settingsChanged("routing")` /
+  `settingsChanged("backlinks")` (not just `saveSettings`, which leaves `data-bfv-skip` stale); the view type
+  `editor-lanes`; `.lanes-view`; a card found by `leaf.view.containerEl.closest(".lanes-view")`. Suites save these
+  settings first and put them back in a `finally`.
+- These contracts are tested here without the partners (TEST-CASES.md group CT: BF-01 to BF-05, API-01, CS-01,
+  NN-01), and with them in the cases that `need` them.
 
 ## Development
 
@@ -212,6 +242,10 @@ TODO (filled in from the cross-plugin review).
 - **Code layout:** source in `src/` modules, with the pure logic kept free of Obsidian imports so it can be
   unit-tested (`test/obsidian-stub.ts` stands in for `obsidian`). Patches of Obsidian methods use
   `monkey-around` and are registered with the plugin, so they come off on unload.
+- **Timers:** debounced work uses `src/debounce.ts`, which runs on the main window's timers, never Obsidian's
+  `debounce()`: that one puts its timer on the window active at the first call, and when that window closes
+  first (a popout, or Settings, which the "Trust author" prompt opens on a vault's first open) the timer is
+  lost and the debouncer never runs again. Seen 2026-11-08: Backlinks Full View built no panes until a restart.
 - **Internals:** every Obsidian internal used was checked against Obsidian 1.15.0's `app.js` and `app.css`.
   `minAppVersion` is 1.15.0. A new Obsidian version means re-checking them.
 - **Versions and releases:** `npm version patch|minor|major` bumps `package.json`, then `scripts/version-bump.mjs`
@@ -222,26 +256,29 @@ TODO (filled in from the cross-plugin review).
 - **Trying a build in a vault:** `npm run deploy -- <vault> …` (or `OBSIDIAN_VAULTS`) builds and copies `main.js`,
   `manifest.json` and `styles.css` into each vault that already has the plugin (`--install` adds it); `data.json`
   is never touched. Reload the plugin in Obsidian afterwards.
-- **End-to-end tests:** `e2e/sandbox.sh start|stop|restart|reset|deploy|shot <n>` runs a throwaway Obsidian
+- **End-to-end tests:** `e2e/sandbox.sh start|stop|restart|reset|deploy|shot|status <n>` runs a throwaway Obsidian
   (`OBS_APP`, default the 1.15.0 AppImage) on its own Xvfb display `:110+n` (never on your screen), with its own
-  profile, its own vault in `.sandbox/sb<n>/` (git-ignored) and the DevTools port `9310+n`. The vault is a fresh
-  empty one with only this plugin, plus any built plugins in `OBS_PLUGINS` (folders separated by `:`) to test them
-  together; or a copy of `OBS_VAULT` (e.g. a big test vault). Every start installs the current build. The suite
-  in `e2e/` drives it over the DevTools protocol (`e2e/cdp.mjs`) with real key and mouse input. Needs Xvfb, rsync,
-  curl, node and ImageMagick.
+  profile, its own vault in `.sandbox/sb<n>/` (git-ignored) and the DevTools port `9310+n` (this plugin: sandbox 3).
+  The vault is a fresh empty one with only this plugin, plus any built plugins in `OBS_PLUGINS` (folders or GitHub
+  releases, separated by `:`) to test them together; or a copy of `OBS_VAULT`. Every start installs the current
+  build. `e2e/make-vault.mjs` writes the suite's fixtures (`e2e/fixtures.mjs`) and the settings and core plugins it
+  relies on before Obsidian starts; the runner puts the fixture notes back before every case. `npm run e2e --
+<group>|all|mobile [id-regex]` runs the cases over the DevTools protocol (`e2e/cdp.mjs`, refusing any vault but a
+  sandbox's) with real key and mouse input; `npm run e2e:restart` the restart cases. Cases that need another plugin
+  say so (`needs`) and are skipped without it (`E2E_REQUIRE=<ids>` makes that a failure). Results:
+  `e2e/results.json`. Needs Xvfb, rsync, curl, node and ImageMagick.
 
 ## Verification status
 
-- **Confirmed in Obsidian by the user:** Templater from lanes tabs (Alt+N "Create new note from template", "Open insert template modal").
-- **Decided:** EL-19 (`reviews/2026-11-06-plugins-review.md`): expanded cards far off-screen are unmounted
-  (decided by the user 2026-11-07, implemented, checked in a test Obsidian: `TEST-CASES.md` group PK). Also
-  decided 2026-11-07: Ctrl/Cmd+N goes to the last-used lane; "last-used lane" for a link in a card means the
-  lane used last other than the card's own.
-- **Editor Multiple Lanes, checked in a test Obsidian** (sandbox copy of 948, real input over CDP):
-  `custom-plugins/editor-lanes/TEST-CASES.md` (scripts in its `e2e/`), 151 cases (desktop, mobile emulation on tablet and phone, and an
-  Obsidian restart); final full run 2026-11-07: none failing (5 documented limits).
-- **Everything else** is built, unit-tested (`npm run check`) and was used in the author's vaults, but not confirmed
-  by the user in Obsidian.
-- **Deep test catalogue** (2026-11-07): `TEST-CASES.md`, cases checked against this spec and common sense, each run
-  in an isolated test Obsidian over the DevTools protocol with real key and mouse input, then fixed and re-run until a
-  full run was clean. It records the final status per case and the date of the final run.
+- **Confirmed in Obsidian by the user:** Templater from lanes tabs (Alt+N "Create new note from template", "Open
+  insert template modal").
+- **Decided by the user (2026-11-07):** expanded cards far off-screen are unmounted (Cards, Far-away cards); Ctrl/Cmd+N
+  goes to the last-used lane; "last-used lane" for a link in a card means the lane used last other than the card's
+  own.
+- **Checked in a test Obsidian** (1.15.0 sandbox, real input over CDP; `TEST-CASES.md`, scripts in `e2e/`):
+  2026-11-08, alone in a fresh empty vault (every group, mobile emulation on tablet and
+  phone, and an Obsidian restart): 139 cases, 131 pass, 1 fails (MO-02: a phone's lane switching scrolls one step
+  late, open), 7 skipped (they need another plugin). Together with Backlinks Full View, Editor Outliner, Templater
+  and Calendar: the contract cases and the cases that need them pass, except the two that need Backlinks Full
+  View's panes (that build showed none). Details: `TEST-CASES.md`, Runs.
+- **Everything else** is built and unit-tested (`npm run check`), not confirmed by the user in Obsidian.

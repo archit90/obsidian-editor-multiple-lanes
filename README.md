@@ -38,6 +38,7 @@ npm run build                    # main.js
 npm test                         # unit tests
 npm run check                    # format, lint, typecheck, unit tests, build, smoke load: before every commit
 npm run deploy -- <vault> …      # build and copy into vaults that have the plugin installed (--install adds it)
+e2e/sandbox.sh reset 3 && npm run e2e -- all   # end-to-end tests in a throwaway Obsidian (see TEST-CASES.md)
 ```
 
 Releasing: `npm version patch` (or `minor` / `major`) bumps `package.json`, `manifest.json` and `versions.json` and

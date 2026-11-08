@@ -1,3 +1,4 @@
+// node e2e/unstick.mjs: cancel a drag (or a pressed mouse button) a stopped case left in the sandbox
 import { open } from "./lib.mjs";
 const c = await open();
 await c.send("Input.setInterceptDrags", { enabled: false });

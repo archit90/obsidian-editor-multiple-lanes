@@ -8,14 +8,13 @@ import {
   Platform,
   TFile,
   WorkspaceLeaf,
-  WorkspaceSplit,
   getLinkpath,
   setIcon,
 } from "obsidian";
 import type EditorLanesPlugin from "./main";
 import type { LanesView } from "./lanes-view";
 import { asEl } from "./dom";
-import { createHostSplit } from "./hosting";
+import { createHostLeaf, createHostSplit } from "./hosting";
 import { isFar, parkDistance, parkStep } from "./park";
 import { DropEffect, clampIn, linkpathsInText, pickDropEffect } from "./dnd";
 import { noteNameError, tidyName } from "./names";
@@ -45,6 +44,14 @@ const saving = new Map<TFile, Promise<unknown>>();
 
 /** Hosted leaves being taken down by the lane itself (their patched detach mustn't close the card). */
 const unmounting = new WeakSet<WorkspaceLeaf>();
+
+/**
+ * Hosted leaves whose note is still opening (Lane.doMount). A card unmounted meanwhile (collapsed, closed, parked,
+ * its lane merged away) has its leaf detached only once that open has finished: detaching it halfway would leave
+ * the view that's loading into it without anyone to unload it.
+ */
+const opening = new WeakSet<WorkspaceLeaf>();
+const detachWhenOpened = new WeakMap<WorkspaceLeaf, () => void>();
 
 /** The sections of Obsidian's own file menu, in its order (app.js, the file explorer's menu). */
 const FILE_MENU_SECTIONS = [
@@ -310,7 +317,8 @@ export class Lane {
   }
 
   private createItem(file: TFile, collapsed: boolean, pinned = false, openedAt = stamp()): Item {
-    const el = createDiv({ cls: "lane-item" });
+    // in the lane's own document (a lanes tab in a popout window); place() puts it where it belongs
+    const el = this.listEl.createDiv({ cls: "lane-item" });
     const header = el.createDiv({ cls: "lane-item-header" });
     const chevEl = header.createEl("button", { cls: "lane-chevron" });
     const hintId = `lane-title-hint-${++srHintSeq}`;
@@ -398,15 +406,12 @@ export class Lane {
 
     // header click (or the chevron button, which also takes Enter / Space) toggles the note
     header.addEventListener("click", e => {
-      if (
-        (e.target as HTMLElement).closest(
-          '.lane-item-title[contenteditable="true"], .lane-close, .lane-pin, .lane-mode',
-        )
-      )
+      if (asEl(e.target)?.closest('.lane-item-title[contenteditable="true"], .lane-close, .lane-pin, .lane-mode'))
         return;
       const expanding = it.collapsed;
       if (expanding) it.openedAt = stamp();
       void this.setCollapsed(it, !it.collapsed).then(() => {
+        if (!this.items.includes(it)) return; // closed or moved meanwhile: the tidy rules aren't about it any more
         if (expanding) this.afterExpand(it);
         this.save();
       });
@@ -608,7 +613,7 @@ export class Lane {
       new Notice(msg);
       this.updateTitle(it);
     };
-    const err = noteNameError(name, it.file.basename, it.file.parent?.path ?? "");
+    const err = noteNameError(name, it.file.basename, this.plugin.settings.keepStampPrefix);
     if (err) return refuse(err);
     const dir = it.file.parent && it.file.parent.path !== "/" ? it.file.parent.path + "/" : "";
     const path = `${dir}${name}.${it.file.extension}`;
@@ -617,7 +622,7 @@ export class Lane {
     try {
       await this.app.fileManager.renameFile(it.file, path);
     } catch (e) {
-      console.error("[editor-lanes] rename failed", e);
+      console.error("[editor-multiple-lanes] rename failed", e);
       refuse(`Couldn't rename: ${(e as Error)?.message ?? e}`);
     }
   }
@@ -781,7 +786,7 @@ export class Lane {
       this.plugin.adoptCardView(it.leaf.view); // see main.ts patchCardScrolling
       const view = readView(it.leaf.getViewState().state);
       const json = JSON.stringify(view);
-      // a note without a mode of its own opens in the vault default: that isn't its own mode yet (EL-16)
+      // a note without a mode of its own opens in the vault default: that isn't its own mode yet
       const own = ownViewChange(it.view === null ? null : JSON.stringify(it.view), it.mountedView, json, mounting);
       it.mountedView = own.mounted;
       if (own.save) {
@@ -883,8 +888,7 @@ export class Lane {
     if (this.draining) return;
     this.draining = true;
     try {
-      while (this.lazyQueue.length) {
-        const it = this.lazyQueue.shift()!;
+      for (let it = this.lazyQueue.shift(); it; it = this.lazyQueue.shift()) {
         if (!this.items.includes(it) || it.collapsed || it.leaf) continue;
         // notes mounted before this one may have pushed it out of view; the observer reports it again
         if (!this.nearView(it.el, it.parked ? this.wakeDistance() : undefined)) continue;
@@ -902,11 +906,11 @@ export class Lane {
     }
   }
 
-  /** When each mounted card was first seen far from view (EL-19). */
+  /** When each mounted card was first seen far from view. */
   private farSince = new WeakMap<Item, number>();
 
   /**
-   * EL-19: unmount ("park") expanded cards that have been far outside the visible part of the lane for a while
+   * Unmount ("park") expanded cards that have been far outside the visible part of the lane for a while
    * (park.ts), keeping their height, mode, cursor, selection and scroll; the lazy-mount observer mounts them again
    * within wakeDistance(), before they scroll into view. Undo history survives, as for collapsing (Obsidian keeps
    * a note's editor history across its editors).
@@ -998,15 +1002,10 @@ export class Lane {
 
   private async doMount(it: Item) {
     this.observer?.unobserve(it.el);
+    it.errorEl?.remove();
+    it.errorEl = null;
     const split = createHostSplit(this.app.workspace); // see hosting.ts
-    let leaf: WorkspaceLeaf;
-    try {
-      // WorkspaceLeaf's constructor isn't in the public API: new WorkspaceLeaf(app)
-      leaf = new (WorkspaceLeaf as unknown as new (app: App) => WorkspaceLeaf)(this.app);
-      split.insertChild(0, leaf);
-    } catch {
-      leaf = this.app.workspace.createLeafInParent(split as unknown as WorkspaceSplit, 0);
-    }
+    const leaf = createHostLeaf(this.app, split);
     it.split = split;
     it.leaf = leaf;
     this.plugin.splits.add(split);
@@ -1053,11 +1052,12 @@ export class Lane {
       return origSetEState(e);
     };
     it.bodyEl.appendChild(split.containerEl);
-    await saving.get(it.file); // the note's last editor is still saving (see `saving`)
-    if (it.leaf !== leaf) return; // unmounted meanwhile
-    const pending = it.pending;
-    it.pending = null;
+    opening.add(leaf);
     try {
+      await saving.get(it.file); // the note's last editor is still saving (see `saving`)
+      if (it.leaf !== leaf) return; // unmounted meanwhile
+      // `it.pending` stays set until the note is open: an unmount meanwhile keeps it for the next mount
+      const pending = it.pending;
       // The kept cursor / selection comes back without focusing the editor: MarkdownView's setEphemeralState
       // focuses it for a `cursor`, and a card mounting as it nears view ("Expand all", back from far away) would
       // take the focus and the active note from the card being edited. The kept `scroll` (the editor's own,
@@ -1069,10 +1069,13 @@ export class Lane {
         state: mountViewState(pending),
         eState: Object.keys(eState).length ? eState : undefined,
       });
+      // unmounted (and maybe mounted again) while the note opened: this leaf goes (see `opening`)
+      if (it.leaf !== leaf) return;
+      it.pending = null;
       if (cursor) restoreSelection(leaf, cursor);
       this.syncView(it, true);
       if (it.parked) {
-        // back from far away (EL-19): the editor has laid out at the same height; let go of the kept one
+        // back from far away: the editor has laid out at the same height; let go of the kept one
         it.parked = false;
         if (pending?.bodyScroll) it.bodyEl.scrollTop = pending.bodyScroll;
         window.requestAnimationFrame(() => {
@@ -1080,8 +1083,17 @@ export class Lane {
         });
       }
     } catch (e) {
-      console.error("[editor-lanes] could not open", it.file.path, e);
-      it.bodyEl.createDiv({ cls: "lane-empty", text: "Couldn't open this note." });
+      console.error("[editor-multiple-lanes] could not open", it.file.path, e);
+      if (it.leaf === leaf) {
+        // take the broken leaf out; a click on the card's body tries again
+        this.unmount(it);
+        it.errorEl = it.bodyEl.createDiv({ cls: "lane-empty lane-mount-error", text: "Couldn't open this note." });
+      }
+    } finally {
+      opening.delete(leaf);
+      const detach = detachWhenOpened.get(leaf);
+      detachWhenOpened.delete(leaf);
+      detach?.();
     }
   }
 
@@ -1095,7 +1107,8 @@ export class Lane {
     if (!it.split) return;
     const split = it.split;
     const leaf = it.leaf;
-    if (keep && leaf) {
+    // a leaf whose note is still opening has nothing to keep yet: `it.pending` still holds what it opens with
+    if (keep && leaf && !opening.has(leaf)) {
       try {
         const st = leaf.getViewState().state ?? {};
         it.pending = {
@@ -1119,6 +1132,7 @@ export class Lane {
       const view = leaf.view;
       if (view instanceof MarkdownView && view.file) {
         const file = view.file;
+        // writes nothing before the note's text has loaded (TextFileView.save)
         const done = view
           .save()
           .catch(() => undefined)
@@ -1129,7 +1143,10 @@ export class Lane {
       }
       this.plugin.dropSearchKeys(leaf);
       unmounting.add(leaf);
-      this.plugin.detachQuietly(leaf); // no "Undo close tab" entry per hosted note: the lane's own entry restores them
+      // no "Undo close tab" entry per hosted note: the lane's own entry restores them
+      const detach = () => this.plugin.detachQuietly(leaf);
+      if (opening.has(leaf)) detachWhenOpened.set(leaf, detach);
+      else detach();
     }
     split.containerEl.remove();
   }

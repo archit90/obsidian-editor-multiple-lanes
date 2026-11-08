@@ -1,10 +1,14 @@
-import { connect } from "../../editor-outliner/e2e/cdp.mjs";
-import { execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-// absolute: ImageMagick's security policy refuses screenshot paths with ../ in them
-export const H = fileURLToPath(new URL("../../../.sandbox", import.meta.url));
+// Connection helpers for the e2e cases: real mouse, wheel, key and drag input over the DevTools protocol, and a
+// second connection for the Settings window. Everything goes to this plugin's sandbox (config.mjs, e2e/sandbox.sh).
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { assertSandboxVault, connect } from "./cdp.mjs";
+import { N, PORT, SANDBOX_SH, SHOTS } from "./config.mjs";
+
+/** Connect to the sandbox's main window; refuses anything but a sandbox vault (see cdp.mjs assertSandboxVault). */
 export async function open() {
-  const c = await connect(9313);
+  const c = await connect(PORT);
+  await assertSandboxVault(c);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const mouse = async (type, x, y, o = {}) =>
     c.send("Input.dispatchMouseEvent", {
@@ -38,8 +42,14 @@ export async function open() {
     await click(o.dx != null ? Math.round(p.l + o.dx) : p.x, o.dy != null ? Math.round(p.t + o.dy) : p.y, o);
     return p;
   };
-  const shot = name =>
-    execSync(`mkdir -p ${H}/shots-el && bash ${H}/../tools/obs-sandbox.sh shot 3 ${H}/shots-el/${name}.png`);
+  // a screenshot of the sandbox's display, at an absolute path (ImageMagick's policy refuses ../)
+  const shot = name => {
+    try {
+      execFileSync("bash", [SANDBOX_SH, "shot", String(N), path.join(SHOTS, `${name}.png`)], { stdio: "ignore" });
+    } catch {
+      /* a missing screenshot doesn't fail a case */
+    }
+  };
   const wheel = async (x, y, dy) =>
     c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY: dy });
   const unstick = async () => {
@@ -109,10 +119,9 @@ export async function settingsWin(c) {
   await c.ev(
     `(async()=>{app.setting.open(); await new Promise(r=>setTimeout(r,300)); app.setting.openTabById("editor-multiple-lanes"); await new Promise(r=>setTimeout(r,600)); return 1})()`,
   );
-  const { connect } = await import("../../editor-outliner/e2e/cdp.mjs");
-  const s = await connect(9313, t => t.url === "about:blank" && /Settings/.test(t.title));
+  const s = await connect(PORT, t => t.url === "about:blank" && /Settings/.test(t.title));
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const mouse = async (type, x, y, o = {}) =>
+  const mouse = async (type, x, y) =>
     s.send("Input.dispatchMouseEvent", {
       type,
       x,
@@ -151,4 +160,28 @@ export async function settingsWin(c) {
       await c.ev(`app.setting.close(), 1`);
     },
   };
+}
+// Mobile emulation (app.emulateMobile reloads the window): on or off, then wait until the app and this plugin are back
+export async function emulateMobile(c, on) {
+  const now = await c.ev(`document.body.classList.contains("is-mobile")`).catch(() => null);
+  if (now === on) return false;
+  await c.ev(`setTimeout(() => app.emulateMobile(${on}), 50), 1`);
+  await new Promise(r => setTimeout(r, 1500));
+  for (let i = 0; i < 120; i++) {
+    const ok = await c
+      .ev(
+        `typeof app !== "undefined" && !!app.workspace?.layoutReady && !!app.plugins?.plugins?.["editor-multiple-lanes"] && document.body.classList.contains("is-mobile") === ${on}`,
+      )
+      .catch(() => false);
+    if (ok) break;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  await new Promise(r => setTimeout(r, 1000));
+  return true;
+}
+// The window's size (the sandbox starts at config.mjs WINDOW; the phone cases make it phone-sized)
+export async function resize(c, w, h) {
+  return c.ev(
+    `(async()=>{const r=require("electron").remote||require("@electron/remote"); r.getCurrentWindow().setBounds({x:0,y:0,width:${w},height:${h}}); await new Promise(r=>setTimeout(r,1200)); return innerWidth+"x"+innerHeight+" phone="+document.body.classList.contains("is-phone")})()`,
+  );
 }

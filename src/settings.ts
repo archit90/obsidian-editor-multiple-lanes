@@ -1,12 +1,16 @@
-import { App, PluginSettingTab, Setting, debounce } from "obsidian";
+import { App, PluginSettingTab, Setting } from "obsidian";
+import { debounce } from "./debounce";
 import type EditorLanesPlugin from "./main";
 import { LIMITS, Settings, parseCount } from "./config";
 import { drawPreview } from "./layout-modal";
 import { describeLayout, parseLayout } from "./layout";
 
 type NumberKey = keyof typeof LIMITS;
-/** What has to be redone when a setting changes (see EditorLanesPlugin.settingsChanged). */
-export type Refresh = "none" | "looks" | "layout" | "routing" | "backlinks";
+/**
+ * What has to be redone when a setting changes (see EditorLanesPlugin.settingsChanged): nothing (read when used),
+ * the cards' looks, the default layout, routing (exceptions, lanes only), Backlinks Full View's panes, or all.
+ */
+export type Refresh = "none" | "looks" | "layout" | "routing" | "backlinks" | "all";
 
 export class LanesSettingTab extends PluginSettingTab {
   constructor(
@@ -79,6 +83,12 @@ export class LanesSettingTab extends PluginSettingTab {
   override display() {
     const { containerEl: el } = this;
     el.empty();
+    if (this.plugin.degraded) {
+      el.createEl("p", {
+        cls: "lane-setting-error",
+        text: `Editor Multiple Lanes is off: this Obsidian version can't host notes in lanes (missing: ${this.plugin.degraded}). Notes open in normal tabs.`,
+      });
+    }
 
     new Setting(el)
       .setName("Editor lanes only")
@@ -183,6 +193,16 @@ export class LanesSettingTab extends PluginSettingTab {
     );
     heightSetting = this.number(el, "noteMaxHeight", "Maximum note height", "Height in pixels", "looks");
     heightSetting.settingEl.toggle(this.s.noteHeight === "cap");
+
+    // ---------- Renaming ----------
+    new Setting(el).setName("Renaming").setHeading();
+    this.toggle(
+      el,
+      "keepStampPrefix",
+      "Keep a date-time prefix when renaming",
+      'A note whose name starts with a date and time (YYYY-MM-DD-HHmmss, as in "2026-11-06-053000 standup") keeps such a prefix when you rename it from its card title.',
+      "none",
+    );
 
     // ---------- Performance ----------
     new Setting(el).setName("Performance").setHeading();

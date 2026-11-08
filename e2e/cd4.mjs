@@ -1,4 +1,4 @@
-import { A, B, C, D, MOD, openIn, explorerClick, clickLinkIn, quick, st, eq, headerClick } from "./common.mjs";
+import { A, B, C, D, DIR, NOTES, LONG, SEARCH_WORD, openIn, clickLine, st, tA, tB, tC, tD } from "./common.mjs";
 import { drag } from "./lib.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 const hdr = (lane, i) => `${item(lane, i)}.el.querySelector(".lane-item-header")`;
@@ -10,7 +10,7 @@ export const cases = [
     run: async c => {
       await openIn(c, B, 0);
       await c.js(
-        `T.P().settings.routeExceptions="_test/EL target.md"; await T.P().settingsChanged("routing"); if(!T.f("_test/EL target.md")) await app.vault.create("_test/EL target.md","line one\\n\\nline two"); else await app.vault.modify(T.f("_test/EL target.md"),"line one\\n\\nline two"); const l=app.workspace.getLeaf("split"); await l.openFile(T.f("_test/EL target.md")); await T.sleep(600); return 1`,
+        `T.P().settings.routeExceptions="_test/EL target.md"; await T.P().settingsChanged("routing"); await T.note("_test/EL target.md","line one\\n\\nline two"); const l=app.workspace.getLeaf("split"); await l.openFile(T.f("_test/EL target.md")); await T.sleep(600); return 1`,
       );
       const f = await c.at(hdr(0, 0));
       const t = await c.at(
@@ -22,7 +22,7 @@ export const cases = [
         `const v=app.workspace.getLeavesOfType("markdown").find(l=>l.view.file?.path==="_test/EL target.md" && !T.P().hostedLeaves.has(l))?.view.editor.getValue(); return {v, lanes: T.lanes()}`,
       );
       return {
-        ok: (r.v || "").includes("Writing hides attention]]") && r.lanes[0].length === 1,
+        ok: (r.v || "").includes(`${tB}]]`) && r.lanes[0].length === 1,
         note: JSON.stringify(r),
       };
     },
@@ -45,7 +45,7 @@ export const cases = [
       res.dropPoint = (await st(c)).lanes[1].join("|");
       // a search result
       await c.js(
-        `app.internalPlugins.getPluginById("global-search").instance.openGlobalSearch("Writing beats memory"); await T.sleep(2500); return 1`,
+        `app.internalPlugins.getPluginById("global-search").instance.openGlobalSearch(${JSON.stringify(SEARCH_WORD)}); await T.sleep(2500); return 1`,
       );
       f = await c.at(
         `[...document.querySelectorAll(".workspace-leaf-content[data-type=search] .tree-item-self.search-result-file-title")][0]`,
@@ -65,19 +65,19 @@ export const cases = [
         `const l=T.tab().lanes[1]; const it=l.items.find(i=>i.file.path===${JSON.stringify(A)}); await l.setCollapsed(it,false); await l.setView(it,{mode:"preview"}); await T.sleep(600); return 1`,
       );
       f = await c.at(
-        `[...T.tab().lanes[1].items.find(i=>i.file.path===${JSON.stringify(A)}).el.querySelectorAll(".markdown-preview-view a.internal-link")].find(a=>/Evidence/.test(a.textContent))`,
+        `[...T.tab().lanes[1].items.find(i=>i.file.path===${JSON.stringify(A)}).el.querySelectorAll(".markdown-preview-view a.internal-link")].find(a=>a.textContent.includes(${JSON.stringify(NOTES.L1.title)}))`,
       );
       t = await c.at(`T.tab().lanes[2].listEl`);
       await drag(c, f, { x: t.x, y: t.t + 3 });
       res.readingLink = (await st(c)).lanes[2].join("|");
       // obsidian:// URL / [[link]] as dragged text: simulate a text drop on the lane background
       await c.js(
-        `const el=T.tab().lanes[0].listEl; const r=el.getBoundingClientRect(); const dt=new DataTransfer(); dt.setData("text/plain","[[Vocabulary predicts money]]\\nobsidian://open?vault=vault&file=z%2FWriting%20beats%20hiring"); for (const type of ["dragenter","dragover","drop"]) el.dispatchEvent(new DragEvent(type,{dataTransfer:dt,bubbles:true,cancelable:true,clientX:r.left+50,clientY:r.bottom-50})); await T.sleep(800); return 1`,
+        `const el=T.tab().lanes[0].listEl; const r=el.getBoundingClientRect(); const dt=new DataTransfer(); dt.setData("text/plain",${JSON.stringify(`[[${tD}]]\nobsidian://open?vault=vault&file=${encodeURIComponent(NOTES.DROP.path.replace(/\.md$/, ""))}`)}); for (const type of ["dragenter","dragover","drop"]) el.dispatchEvent(new DragEvent(type,{dataTransfer:dt,bubbles:true,cancelable:true,clientX:r.left+50,clientY:r.bottom-50})); await T.sleep(800); return 1`,
       );
       res.text = (await st(c)).lanes[0].join("|");
       // a tab header: make a normal tab (exception) and drag its header to lane 0
       await c.js(
-        `T.P().settings.routeExceptions="README"; await T.P().settingsChanged("routing"); const l=app.workspace.getLeaf("tab"); await l.openFile(T.f("README.md")); await T.sleep(400); app.workspace.setActiveLeaf(app.workspace.getLeavesOfType("editor-lanes")[0]); await T.sleep(300); return 1`,
+        `T.P().settings.routeExceptions="README"; await T.P().settingsChanged("routing"); const l=app.workspace.getLeaf("tab"); await l.openFile(T.f(${JSON.stringify(NOTES.README.path)})); await T.sleep(400); app.workspace.setActiveLeaf(app.workspace.getLeavesOfType("editor-lanes")[0]); await T.sleep(300); return 1`,
       );
       f = await c.at(
         `[...document.querySelectorAll(".workspace-tab-header")].find(e=>e.getAttribute("aria-label")==="README")`,
@@ -88,12 +88,12 @@ export const cases = [
         res.tabHeader = (await st(c)).lanes[0][0] + " roots=" + (await st(c)).roots.join(",");
       }
       const ok =
-        res.explorer === "Writing delays interfaces" &&
-        res.dropPoint.startsWith("Vocabulary predicts money|") &&
+        res.explorer === tC &&
+        res.dropPoint.startsWith(`${tD}|`) &&
         res.searchOk &&
-        /Evidence/.test(res.readingLink) &&
-        /Vocabulary predicts money/.test(res.text) &&
-        /Writing beats hiring/.test(res.text);
+        res.readingLink.includes(NOTES.L1.title) &&
+        res.text.includes(tD) &&
+        res.text.includes(NOTES.DROP.title);
       return { ok, note: JSON.stringify(res) };
     },
   },
@@ -106,10 +106,10 @@ export const cases = [
       let t = await c.at(`T.tab().lanes[1].items[0].el.querySelectorAll(".cm-line")[1]`);
       await drag(c, f, t);
       const r = await c.js(
-        `return {lanes: T.lanes(), text: /Writing delays interfaces/.test(T.tab().lanes[1].items.find(i=>i.file.path===${JSON.stringify(A)}).leaf.view.editor.getValue())}`,
+        `return {lanes: T.lanes(), text: T.tab().lanes[1].items.find(i=>i.file.path===${JSON.stringify(A)}).leaf.view.editor.getValue().includes(${JSON.stringify(tC)})}`,
       );
       // a plain text drag over a body still moves text: not tested here (would edit the note)
-      return { ok: r.lanes[1].includes("Writing delays interfaces") && !r.text, note: JSON.stringify(r) };
+      return { ok: r.lanes[1].includes(tC) && !r.text, note: JSON.stringify(r) };
     },
   },
   {
@@ -118,7 +118,7 @@ export const cases = [
       await c.js(
         `T.P().settings.noteHeight="cap"; T.P().settings.noteMaxHeight=400; await T.P().settingsChanged("looks"); return 1`,
       );
-      await openIn(c, "_test/Outline mode.md", 0);
+      await openIn(c, NOTES.LONG.path, 0);
       const r = await c.js(
         `const it=${item(0, 0)}; return {body: it.bodyEl.getBoundingClientRect().height, sh: it.bodyEl.scrollHeight, ov: getComputedStyle(it.bodyEl).overflowY}`,
       );
@@ -126,7 +126,7 @@ export const cases = [
       await c.clickEl(`${item(0, 0)}.el.querySelectorAll(".cm-line")[2]`);
       await c.key("f", { ctrl: true });
       await c.sleep(300);
-      await c.type("item");
+      await c.type(LONG.itemWord);
       await c.sleep(300);
       await c.key("Enter");
       await c.key("Enter");
@@ -148,7 +148,7 @@ export const cases = [
     run: async c => {
       await openIn(c, A, 0);
       await openIn(c, A, 2);
-      await c.clickEl(`${item(0, 0)}.el.querySelectorAll(".cm-line")[1]`);
+      await clickLine(c, item(0, 0), 1); // the line's start: not on one of its links
       await c.key("End");
       await c.type(" ZZQ");
       await c.sleep(800);
@@ -170,7 +170,7 @@ export const cases = [
     id: "CD-22",
     run: async c => {
       await c.js(
-        `for (const p of ["_test/EL ren a.md","_test/EL ren b.md","_test/sub/EL ren b.md"]) if(T.f(p)) await app.vault.delete(T.f(p)); await app.vault.createFolder("_test/sub").catch(()=>0); await app.vault.create("_test/EL ren a.md","x"); return 1`,
+        `for (const p of ["_test/EL ren a.md","_test/EL ren b.md","_test/sub/EL ren b.md"]) if(T.f(p)) await app.vault.delete(T.f(p)); await app.vault.createFolder("_test/sub").catch(()=>0); await T.note("_test/EL ren a.md","x"); return 1`,
       );
       await openIn(c, "_test/EL ren a.md", 0);
       await openIn(c, "_test/EL ren a.md", 1);
@@ -209,7 +209,7 @@ export const cases = [
   {
     id: "CD-23",
     run: async c => {
-      await c.js(`for (const p of ["_test/EL del.md"]) if(!T.f(p)) await app.vault.create(p,"to delete"); return 1`);
+      await c.js(`await T.note("_test/EL del.md","to delete"); return 1`);
       await openIn(c, "_test/EL del.md", 0);
       await openIn(c, "_test/EL del.md", 2);
       await c.js(
@@ -226,12 +226,19 @@ export const cases = [
   {
     id: "CD-24",
     run: async c => {
-      await c.js(`if(!T.f("_test/EL mv.md")) await app.vault.create("_test/EL mv.md","mv"); return 1`);
+      const to = `${DIR}/moved`;
+      await c.js(
+        `if(T.f(${JSON.stringify(to + "/EL mv.md")})) await app.vault.delete(T.f(${JSON.stringify(to + "/EL mv.md")})); await T.note("_test/EL mv.md","mv"); await app.vault.createFolder(${JSON.stringify(to)}).catch(()=>0); return 1`,
+      );
       await openIn(c, "_test/EL mv.md", 0);
-      await c.js(`await app.fileManager.renameFile(T.f("_test/EL mv.md"), "p/EL mv.md"); await T.sleep(500); return 1`);
+      await c.js(
+        `await app.fileManager.renameFile(T.f("_test/EL mv.md"), ${JSON.stringify(to + "/EL mv.md")}); await T.sleep(500); return 1`,
+      );
       const r = await c.js(`return {p: ${item(0, 0)}.pathEl.textContent, file: ${item(0, 0)}.leaf.view.file.path}`);
-      await c.js(`await app.fileManager.renameFile(T.f("p/EL mv.md"), "_test/EL mv.md"); return 1`);
-      return { ok: /^‎p\/‎$/.test(r.p) && r.file === "p/EL mv.md", note: JSON.stringify(r) };
+      await c.js(
+        `await app.fileManager.renameFile(T.f(${JSON.stringify(to + "/EL mv.md")}), "_test/EL mv.md"); return 1`,
+      );
+      return { ok: r.p.replace(/\u200E/g, "") === to + "/" && r.file === to + "/EL mv.md", note: JSON.stringify(r) };
     },
   },
 ];

@@ -1,18 +1,19 @@
-/** Log notes in folder `0/` are named YYYY-MM-DD-HHmmss…; renaming must keep that stamp. */
+/** A date-time prefix at the start of a note name: YYYY-MM-DD-HHmmss (e.g. "2026-11-06-053000 standup"). */
 const STAMP = /^\d{4}-\d{2}-\d{2}-\d{6}/;
 
 /**
- * Why `name` can't be a note's new name, or null if it can. `basename` / `folder` describe the note being
- * renamed (`folder` is "" or "/" for the vault root). Characters forbidden on Windows / Android (synced
- * vaults) and Obsidian's link characters are refused.
+ * Why `name` can't be a note's new name, or null if it can. `basename` is the name of the note being renamed.
+ * Characters forbidden on Windows / Android (synced vaults) and Obsidian's link characters are refused. With
+ * `keepStampPrefix` (setting "Keep a date-time prefix when renaming"), a note whose name starts with a
+ * YYYY-MM-DD-HHmmss date-time can only get a name that starts with one too, in any folder.
  */
-export function noteNameError(name: string, basename: string, folder: string): string | null {
+export function noteNameError(name: string, basename: string, keepStampPrefix: boolean): string | null {
   const bad = name.match(/[\\/:#^[\]|*"<>?]/);
   if (bad) return `A note name can't contain ${bad[0]}`;
   if (name.startsWith(".")) return "A note name can't start with a dot";
   if (/\.md$/i.test(name)) return "Leave out the .md extension";
-  if (folder === "0" && STAMP.test(basename) && !STAMP.test(name)) {
-    return "A log's name must keep its YYYY-MM-DD-HHmmss prefix";
+  if (keepStampPrefix && STAMP.test(basename) && !STAMP.test(name)) {
+    return "Keep the name's YYYY-MM-DD-HHmmss date-time prefix (setting: Keep a date-time prefix when renaming)";
   }
   return null;
 }

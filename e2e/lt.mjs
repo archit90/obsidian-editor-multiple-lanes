@@ -1,4 +1,4 @@
-import { A, B, C, D, MOD, openIn, clickLine, st, eq, headerClick } from "./common.mjs";
+import { A, B, C, D, FILES, openIn, st, eq, tA, tB, tC, tD } from "./common.mjs";
 import { drag, settingsWin } from "./lib.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 const menuClick = async (c, title) => {
@@ -200,12 +200,7 @@ export const cases = [
       return {
         ok:
           s.lanes.length === 1 &&
-          eq(s.lanes[0], [
-            "P:Writing delays interfaces",
-            "Writing replaces caching",
-            "Writing hides attention",
-            "Vocabulary predicts money",
-          ]) &&
+          eq(s.lanes[0], [`P:${tC}`, tA, tB, tD]) &&
           /2 lanes will go; their 3 notes move/.test(warn),
         note: warn + " " + JSON.stringify(s.lanes),
       };
@@ -222,8 +217,7 @@ export const cases = [
       );
       c.shot("LT-06");
       return {
-        ok:
-          eq(r.lanes, [["Writing replaces caching"], [], [], []]) && eq(r.cols, [1, 2, 1]) && r.widths[0] > r.widths[1],
+        ok: eq(r.lanes, [[tA], [], [], []]) && eq(r.cols, [1, 2, 1]) && r.widths[0] > r.widths[1],
         note: JSON.stringify(r),
       };
     },
@@ -425,8 +419,11 @@ export const cases = [
       const r2 = await c.js(
         `return T.tabs().map(t=>({name: t.tabName(), layout: t.layoutInfo().text, n: t.lanes.flatMap(l=>l.items).length}))`,
       );
-      // on a card: split down from the card
-      await clickLine(c, `T.tabs()[0].lanes[0].items[0]`, 1);
+      // on a card: split down from the card (with the card the active leaf: Obsidian treats it as a sidebar leaf
+      // and doesn't offer its split commands; duplicateLeaf on it gives an empty lanes tab)
+      const act = await c.js(
+        `const card=[...T.P().hostedLeaves.keys()][0]; app.workspace.setActiveLeaf(card,{focus:true}); await T.sleep(300); return {active: T.active(), isCard: app.workspace.activeLeaf===card}`,
+      );
       await c.js(`app.commands.executeCommandById("workspace:split-vertical"); await T.sleep(600); return 1`);
       const r3 = await c.js(
         `const offered = app.commands.findCommand("workspace:split-vertical").checkCallback(true); const card = T.P().hostedLeaves.keys().next().value; await app.workspace.duplicateLeaf(card, "vertical"); await T.sleep(600); return {offered, tabs: T.tabs().length, hostedOk: [...T.P().splits].every(s=>s.containerEl.querySelectorAll(".workspace-leaf").length===1), splitInCard: !!document.querySelector(".lane-item-body .workspace-split .workspace-split")}`,
@@ -439,11 +436,12 @@ export const cases = [
           r[0].n === 1 &&
           r[0].name !== r[1].name &&
           r2.length === 3 &&
+          act.isCard &&
           r3.offered === false &&
           r3.tabs === 4 &&
           r3.hostedOk &&
           !r3.splitInCard,
-        note: JSON.stringify({ r, r2, r3 }),
+        note: JSON.stringify({ r, r2, act, r3 }),
       };
     },
   },
@@ -460,11 +458,6 @@ export const cases = [
       await c.js(`app.workspace.getLeavesOfType("editor-lanes")[0].detach(); await T.sleep(400); return 1`);
       await c.key("t", { ctrl: true, shift: true });
       await c.sleep(1200);
-      const after = await c
-        .js(
-          `const t=T.tabs().find(t=>t.tabName()===JSON.parse(${JSON.stringify("x")}==="x" ? ${"`"}${"$"}{0}${"`"} : "")); return 1`,
-        )
-        .catch(() => null);
       const r = await c.js(
         `const b=JSON.parse(${JSON.stringify(before)}); const t=T.tabs().find(t=>t.tabName()===b.name); if(!t) return {missing: T.tabs().map(t=>t.tabName())}; const s=t.getState(); return {same: JSON.stringify({...s, lanes: s.lanes.map(l=>l.map(d=>({...d, openedAt:0})))})===JSON.stringify({...b, lanes: b.lanes.map(l=>l.map(d=>({...d, openedAt:0})))}), s, mode: t.lanes[1].items[0]?.leaf?.getViewState().state.mode}`,
       );
@@ -506,9 +499,9 @@ export const cases = [
             "Close all notes(x)",
             "Lane layout of this tab…",
           ]) &&
-          eq(r1, ["P:C:Writing replaces caching", "C:Writing hides attention"]) &&
+          eq(r1, [`P:C:${tA}`, `C:${tB}`]) &&
           r2.every(Boolean) &&
-          eq(r3, ["P:Writing replaces caching"]),
+          eq(r3, [`P:${tA}`]),
         note: JSON.stringify({ empty, r1, r2, r3 }),
       };
     },
@@ -518,7 +511,7 @@ export const cases = [
     run: async c => {
       await openIn(c, A, 0);
       await c.js(
-        `for (const p of ["Untitled.canvas","u/2026-10-10-120000 kitchen quote.pdf","u/2026-10-19-143000 architecture sketch v1.png","x/daily review.base"]) { await app.workspace.getLeaf(false).openFile(T.f(p)); await T.sleep(500); app.workspace.setActiveLeaf(app.workspace.getLeavesOfType("editor-lanes")[0], {focus:true}); await T.sleep(200); } const l=app.workspace.getLeaf(false); await l.setViewState({type:"graph", active:true}); await T.sleep(500); return 1`,
+        `for (const p of ${JSON.stringify([FILES.CANVAS, FILES.PDF, FILES.PNG, FILES.BASE])}) { await app.workspace.getLeaf(false).openFile(T.f(p)); await T.sleep(500); app.workspace.setActiveLeaf(app.workspace.getLeavesOfType("editor-lanes")[0], {focus:true}); await T.sleep(200); } const l=app.workspace.getLeaf(false); await l.setViewState({type:"graph", active:true}); await T.sleep(500); return 1`,
       );
       const s = await st(c);
       return {
@@ -544,7 +537,7 @@ export const cases = [
         `return app.workspace.getLeavesOfType("editor-lanes").map(l=>l.view.lanes.flatMap(x=>x.items.map(i=>i.file.basename)))`,
       );
       return {
-        ok: tabs === 2 && eq(r, [["Writing replaces caching"], ["Writing hides attention"]]),
+        ok: tabs === 2 && eq(r, [[tA], [tB]]),
         note: JSON.stringify(r),
       };
     },

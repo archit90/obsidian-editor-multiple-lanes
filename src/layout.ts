@@ -1,6 +1,6 @@
 // Lane layout logic with no DOM or app access, so it can be unit-tested: the layout definition a lanes tab is
 // built from (columns of stacked lanes), lane order and the next-lane wrap rule, what happens to lanes and their
-// notes when a tab's layout changes, adding / removing a lane, and sizes (new-lane width, dragged dividers).
+// notes when a tab's layout changes, and sizes (dragged dividers).
 
 export const MAX_COLUMNS = 8;
 export const MAX_ROWS = 6;

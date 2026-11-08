@@ -1,4 +1,4 @@
-// EL-19: expanded cards far from the visible part of their lane are unmounted ("parked") after a while, and
+// Far-away cards: expanded cards far from the visible part of their lane are unmounted ("parked") after a while, and
 // mounted again (the lazy-mount observer, "Pre-load distance") before they scroll back into view. No DOM or app
 // access, so it can be unit-tested.
 

@@ -1,4 +1,4 @@
-import { A, B, C, D, MOD, openIn, explorerClick, clickLinkIn, quick, st, eq, headerClick } from "./common.mjs";
+import { A, B, C, MANY, NOTES, openIn, quick, st, eq, headerClick, tA, tB, tC } from "./common.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 const mode = (lane, i) =>
   `(()=>{const it=${item(lane, i)}; const vs=it.leaf?.getViewState().state; return {mode: vs?.mode, source: vs?.source, view: it.view, btn: it.el.getAttribute("data-view-mode")}})()`;
@@ -81,7 +81,7 @@ export const cases = [
       await openIn(c, A, 0);
       await openIn(c, B, 1);
       await c.clickEl(`document.querySelectorAll(".lane")[2]`, { dy: 300 });
-      await quick(c, "Writing delays interfaces");
+      await quick(c, tC);
       await c.sleep(800);
       const r = await c.js(
         `return T.tab().getState().lanes.flat().map(d=>d.path.split("/").pop()+":"+JSON.stringify(d.view||null))`,
@@ -92,7 +92,7 @@ export const cases = [
   {
     id: "CD-11",
     run: async c => {
-      await openIn(c, "_test/Outline mode.md", 0);
+      await openIn(c, NOTES.LONG.path, 0);
       await c.js(`const it=${item(0, 0)}; it.leaf.view.editor.setCursor({line:40,ch:2}); return 1`);
       await c.clickEl(`${item(0, 0)}.chevEl`);
       await c.sleep(300);
@@ -127,7 +127,7 @@ export const cases = [
     id: "CD-12",
     run: async c => {
       const n = await c.js(
-        `const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/")).slice(0,60); const l=T.tab().lanes[0]; for (const f of fs) await l.add(f,{focus:false}); l.setAllCollapsed(true); await T.sleep(500); l.listEl.scrollTop=0; return fs.length`,
+        `const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(${JSON.stringify(MANY.folder + "/")})).slice(0,60); const l=T.tab().lanes[0]; for (const f of fs) await l.add(f,{focus:false}); l.setAllCollapsed(true); await T.sleep(500); l.listEl.scrollTop=0; return fs.length`,
       );
       const t0 = Date.now();
       await c.js(`T.tab().lanes[0].setAllCollapsed(false); await T.sleep(1500); return 1`);
@@ -159,19 +159,19 @@ export const cases = [
       await openIn(c, B, 0);
       await c.clickEl(`${item(0, 1)}.pinEl`);
       let s = await st(c);
-      const t1 = eq(s.lanes[0], ["P:Writing replaces caching", "Writing hides attention"]);
+      const t1 = eq(s.lanes[0], [`P:${tA}`, tB]);
       await openIn(c, C, 0);
       s = await st(c);
-      const t2 = eq(s.lanes[0], ["P:Writing replaces caching", "Writing delays interfaces", "Writing hides attention"]);
+      const t2 = eq(s.lanes[0], [`P:${tA}`, tC, tB]);
       const closeHidden = await c.js(`return getComputedStyle(${item(0, 0)}.el.querySelector(".lane-close")).display`);
       await c.clickEl(`${item(0, 0)}.el.querySelectorAll(".cm-line")[3]`);
       await c.key("w", { ctrl: true });
       await c.sleep(400);
       s = await st(c);
-      const t3 = s.lanes[0][0] === "P:Writing replaces caching";
+      const t3 = s.lanes[0][0] === `P:${tA}`;
       await c.js(`T.tab().lanes[0].closeAll(); return 1`);
       s = await st(c);
-      const t4 = eq(s.lanes[0], ["P:Writing replaces caching"]);
+      const t4 = eq(s.lanes[0], [`P:${tA}`]);
       const saved = await c.js(`return T.tab().getState().lanes[0][0].pinned`);
       return {
         ok: t1 && t2 && t3 && t4 && closeHidden === "none" && saved === true,
@@ -187,7 +187,7 @@ export const cases = [
       const undo0 = await c.js(`return app.workspace.undoHistory?.length ?? -1`);
       await c.clickEl(`${item(0, 0)}.el.querySelector(".lane-close")`);
       let s = await st(c);
-      const t1 = eq(s.lanes[0], ["Writing replaces caching"]);
+      const t1 = eq(s.lanes[0], [tA]);
       await c.clickEl(`${item(0, 0)}.el.querySelectorAll(".cm-line")[3]`);
       await c.key("w", { ctrl: true });
       await c.sleep(400);

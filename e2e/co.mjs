@@ -1,8 +1,12 @@
-import { A, B, C, D, openIn, clickLine, clickLinkIn, st, eq } from "./common.mjs";
+import { A, B, C, D, NOTES, openIn, st, eq } from "./common.mjs";
+// monkey-around's wrapper (what every patch installs): a method that still is one after the plugin is disabled
+// means a patch wasn't taken off
+const PATCHED = `(o, m) => typeof o?.[m] === "function" && /^function wrapper\\(\\.\\.\\.args\\)/.test(o[m].toString())`;
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 export const cases = [
   {
     id: "CO-01",
+    needs: ["core:workspaces"],
     run: async c => {
       await c.js(`await T.tab().setLayout("40, 60"); T.tab().rename("WS one"); await T.sleep(200); return 1`);
       await openIn(c, A, 0);
@@ -51,15 +55,18 @@ export const cases = [
       await openIn(c, B, 1);
       await c.js(`T.tab().lanes[1].togglePin(T.tab().lanes[1].items[0]); return 1`);
       const before = await c.js(`return JSON.stringify(T.tab().getState())`);
+      // every method Lanes patches: on the workspace, its right sidebar, and the prototypes of a leaf, a card's
+      // note view, its editing mode and its Reading view renderer (taken from a card while it's there)
       const r = await c.js(
-        `const domBefore=document.querySelectorAll(".lane-split").length; await app.plugins.disablePlugin("editor-multiple-lanes"); await T.sleep(800); const off={splits: document.querySelectorAll(".lane-split").length, lanesDom: document.querySelectorAll(".lane").length, patched: app.workspace.iterateLeaves.toString().includes("splits"), md: app.workspace.getLeavesOfType("markdown").length}; await app.plugins.enablePlugin("editor-multiple-lanes"); await T.sleep(2000); return {domBefore, off, after: JSON.stringify(T.tab().getState())}`,
+        `const patched=${PATCHED}; const ws=app.workspace; const card=T.tab().lanes[0].items[0].leaf; const v=card.view; const objs={ws, rs: ws.rightSplit, leaf: Object.getPrototypeOf(card), view: Object.getPrototypeOf(v), em: Object.getPrototypeOf(v.editMode), pr: Object.getPrototypeOf(v.previewMode.renderer)}; const methods={ws:["iterateLeaves","openLinkText","getLeaf","getUnpinnedLeaf","getActiveViewOfType","createLeafBySplit","duplicateLeaf","moveLeafToPopout","revealLeaf","updateMobileVisibleTabGroup","focusLeaf"], rs:["collapse"], leaf:["openFile"], view:["onDelete","setState"], em:["applyScroll"], pr:["applyScroll","selectRange"]}; const list=()=>Object.entries(methods).flatMap(([k,ms])=>ms.filter(m=>patched(objs[k],m)).map(m=>k+"."+m)); const on=list(); const domBefore=document.querySelectorAll(".lane-split").length; await app.plugins.disablePlugin("editor-multiple-lanes"); await T.sleep(800); const off={splits: document.querySelectorAll(".lane-split").length, lanesDom: document.querySelectorAll(".lane").length, patched: list(), md: app.workspace.getLeavesOfType("markdown").length}; await app.plugins.enablePlugin("editor-multiple-lanes"); await T.sleep(2000); return {domBefore, on, off, after: JSON.stringify(T.tab().getState())}`,
       );
       const strip = s => JSON.stringify(JSON.parse(s).lanes.map(l => l.map(d => d.path + d.pinned)));
       return {
         ok:
+          r.on.length >= 13 &&
           r.off.splits === 0 &&
           r.off.lanesDom === 0 &&
-          !r.off.patched &&
+          r.off.patched.length === 0 &&
           r.off.md === 0 &&
           strip(before) === strip(r.after) &&
           JSON.parse(before).name === JSON.parse(r.after).name,
@@ -69,7 +76,7 @@ export const cases = [
   },
   {
     id: "CO-04",
-    needs: "backlinks-full-view",
+    needs: ["backlinks-full-view"],
     run: async c => {
       await openIn(c, A, 0);
       await c.sleep(1500);
@@ -99,7 +106,7 @@ export const cases = [
       await openIn(c, A, 0);
       const r = await c
         .js(
-          `const v=${item(0, 0)}.leaf.view; const proto=Object.getPrototypeOf(v.editMode); const l=app.workspace.getLeaf("split"); await l.setViewState({type:"markdown", state:{file:"_test/Outline mode.md", mode:"source"}}); await T.sleep(600); l.view.editMode.applyScroll(120); await T.sleep(300); const sc=l.view.editMode.cm.scrollDOM.scrollTop; const nonCardScroll = l.view.scroll; l.detach(); return {sc, nonCardScroll, cardScroll: v.scroll}`,
+          `const v=${item(0, 0)}.leaf.view; const l=app.workspace.getLeaf("split"); await l.setViewState({type:"markdown", state:{file:${JSON.stringify(NOTES.LONG.path)}, mode:"source"}}); await T.sleep(600); l.view.editMode.applyScroll(120); await T.sleep(300); const sc=l.view.editMode.cm.scrollDOM.scrollTop; const nonCardScroll = l.view.scroll; l.detach(); return {sc, nonCardScroll, cardScroll: v.scroll}`,
         )
         .catch(e => ({ err: String(e) }));
       return { ok: r.sc > 1000 && r.cardScroll === null, note: JSON.stringify(r) };

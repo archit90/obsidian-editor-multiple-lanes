@@ -1,11 +1,11 @@
-import { A, B, C, D, openIn, clickLine, st, eq } from "./common.mjs";
-const LONG = "_test/Outline mode.md";
+import { NOTES, PEOPLE, openIn, clickLine, st } from "./common.mjs";
+const LONG = NOTES.LONG.path;
 export const cases = [
   {
     id: "PF-01",
     run: async c => {
       const r = await c.js(
-        `const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("n/")).slice(0,50); const t0=performance.now(); for (const f of fs) await T.P().openInLane(f,"same",T.tab().lanes[0]); const t1=performance.now(); await T.sleep(1000); const lag=[]; for (let i=0;i<5;i++){ const s=performance.now(); await new Promise(r=>requestAnimationFrame(r)); lag.push(Math.round(performance.now()-s)); } return {ms: Math.round(t1-t0), per: Math.round((t1-t0)/50), n: T.tab().lanes[0].items.length, mounted: T.tab().lanes[0].items.filter(i=>i.leaf).length, frame: lag, heap: Math.round(performance.memory.usedJSHeapSize/1e6)}`,
+        `const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(${JSON.stringify(PEOPLE.folder + "/")})).slice(0,50); const t0=performance.now(); for (const f of fs) await T.P().openInLane(f,"same",T.tab().lanes[0]); const t1=performance.now(); await T.sleep(1000); const lag=[]; for (let i=0;i<5;i++){ const s=performance.now(); await new Promise(r=>requestAnimationFrame(r)); lag.push(Math.round(performance.now()-s)); } return {ms: Math.round(t1-t0), per: Math.round((t1-t0)/50), n: T.tab().lanes[0].items.length, mounted: T.tab().lanes[0].items.filter(i=>i.leaf).length, frame: lag, heap: Math.round(performance.memory.usedJSHeapSize/1e6)}`,
       );
       return { ok: r.n === 50 && r.per < 400 && Math.max(...r.frame) < 200, note: JSON.stringify(r) };
     },
@@ -39,14 +39,20 @@ export const cases = [
       await c.js(
         `T.tab().lanes[0].listEl.scrollTop=3000; await T.sleep(200); await T.tab().setLayout("50, 50"); await T.sleep(400); return 1`,
       );
-      const r = await c.js(`return Math.round(T.tab().lanes[0].listEl.scrollTop)`);
-      return { ok: true, note: "scrollTop after a layout change: " + r + " (documented: may reset)" };
+      const r = await c.js(
+        `return {scroll: Math.round(T.tab().lanes[0].listEl.scrollTop), lanes: T.lanes(), mounted: !!T.tab().lanes[0].items[0]?.leaf}`,
+      );
+      // the documented limit: the scroll position may reset; the card itself stays, mounted
+      return {
+        ok: r.lanes.length === 2 && r.lanes[0][0] === NOTES.LONG.title && r.mounted,
+        note: "scrollTop after a layout change: " + r.scroll + " (documented: may reset) " + JSON.stringify(r.lanes),
+      };
     },
   },
   {
     id: "CD-26",
     run: async c => {
-      await c.js(`await app.vault.modify(T.f("_test/EL u1.md"),"base"); return 1`);
+      await c.js(`await T.note("_test/EL u1.md","base"); return 1`);
       await openIn(c, "_test/EL u1.md", 0);
       await clickLine(c, "T.tab().lanes[0].items[0]", 0);
       await c.key("End");
@@ -68,13 +74,15 @@ export const cases = [
           JSON.stringify(v) +
           ", Ctrl+Shift+Z: " +
           JSON.stringify(redo) +
-          " (Obsidian 1.15 keeps a note's undo history: EL-22 / the spec are wrong)",
+          " (Obsidian 1.15 keeps a note's undo history across its editors)",
       };
     },
   },
   {
     id: "RO-25",
+    needs: ["calendar"],
     run: async c => {
+      const before = await c.js(`return app.vault.getMarkdownFiles().map(f=>f.path)`);
       await c.clickEl(`document.querySelectorAll(".lane")[1]`, { dy: 400 });
       const r = await c.js(
         `const cal=app.workspace.getLeavesOfType("calendar")[0]; if(!cal) return {nocal:true}; await app.workspace.revealLeaf(cal); await T.sleep(600); const day=cal.view.containerEl.querySelector(".day.today, td.today .day, .today"); if(!day) return {noday:true, html: cal.view.containerEl.innerHTML.slice(0,200)}; const r=day.getBoundingClientRect(); return {x: Math.round(r.left+r.width/2), y: Math.round(r.top+r.height/2)}`,
@@ -88,6 +96,10 @@ export const cases = [
       );
       const s = await st(c);
       await c.js(`app.workspace.rightSplit.collapse(); return 1`);
+      // today's daily note, if the case made it, goes again
+      await c.js(
+        `const before=new Set(${JSON.stringify(before)}); for (const f of app.vault.getMarkdownFiles().filter(f=>!before.has(f.path))) { for (const t of T.tabs()) for (const l of t.lanes) for (const it of l.items.filter(i=>i.file===f)) l.close(it); await app.vault.delete(f); } return 1`,
+      );
       return { ok: s.roots.length === 1 && s.lanes[1].length === 1, note: JSON.stringify({ r, modal, s }) };
     },
   },

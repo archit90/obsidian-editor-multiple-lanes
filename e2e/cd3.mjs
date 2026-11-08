@@ -1,4 +1,4 @@
-import { A, B, C, D, MOD, openIn, explorerClick, clickLinkIn, quick, st, eq, headerClick } from "./common.mjs";
+import { A, B, C, D, openIn, st, tA, tB, tC, tD } from "./common.mjs";
 import { drag } from "./lib.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 const hdr = (lane, i) => `${item(lane, i)}.el.querySelector(".lane-item-header")`;
@@ -70,8 +70,16 @@ export const cases = [
         items.some(x => /Open in new window/.test(x)) &&
         items.filter(x => x === "Open in new lanes tab").length === 1 &&
         items.indexOf("Open in next lane") === 0 &&
-        log[0].startsWith("Writing hides attention|Writing delays") &&
-        log[3].includes("[[");
+        log[0] === [tB, tC, tA].join("|") &&
+        log[1] === [tC, tB, tA].join("|") &&
+        log[2] === [tB, tC, tA].join("|") &&
+        log[3] === JSON.stringify([[tC, tA], [tB], []]) &&
+        log[4] === JSON.stringify([[tB, tC, tA], [], []]) &&
+        log[5] === JSON.stringify([[tB, tC, tA], [tB], []]) &&
+        log[6] === JSON.stringify([`P:${tB}`, tC, tA]) &&
+        log[7] === JSON.stringify([tC]) &&
+        log[8] === JSON.stringify([]) &&
+        log[9] === `2 card:${tA}@0`;
       return { ok, note: JSON.stringify(items) + " LOG " + JSON.stringify(log) };
     },
   },
@@ -98,21 +106,21 @@ export const cases = [
       const r2 = JSON.stringify(s.lanes);
       // mode + cursor kept: set reading on lane1 card then move back
       await c.js(
-        `const it=T.tab().lanes[1].items.find(i=>i.file.basename==="Writing hides attention"); if(it){ await T.tab().lanes[1].setCollapsed(it,false); await T.tab().lanes[1].setView(it,{mode:"preview"}); } await T.sleep(400); return 1`,
+        `const it=T.tab().lanes[1].items.find(i=>i.file.basename===${JSON.stringify(tB)}); if(it){ await T.tab().lanes[1].setCollapsed(it,false); await T.tab().lanes[1].setView(it,{mode:"preview"}); } await T.sleep(400); return 1`,
       );
       const f3 = await c.at(
-        `T.tab().lanes[1].items.find(i=>i.file.basename==="Writing hides attention").el.querySelector(".lane-item-header")`,
+        `T.tab().lanes[1].items.find(i=>i.file.basename===${JSON.stringify(tB)}).el.querySelector(".lane-item-header")`,
       );
       const l0 = await c.at(`T.tab().lanes[0].listEl`);
       await drag(c, { x: f3.l + f3.w - 120, y: f3.y }, { x: l0.x, y: l0.t + 5 });
       const m = await c.js(
-        `const it=T.tab().lanes[0].items.find(i=>i.file.basename==="Writing hides attention"); return it && {idx: T.tab().lanes[0].items.indexOf(it), mode: it.leaf?.getViewState().state.mode}`,
+        `const it=T.tab().lanes[0].items.find(i=>i.file.basename===${JSON.stringify(tB)}); return it && {idx: T.tab().lanes[0].items.indexOf(it), mode: it.leaf?.getViewState().state.mode}`,
       );
       return {
         ok:
           d1 &&
-          r1 === "C:Writing hides attention|C:Writing replaces caching|C:Writing delays interfaces" &&
-          /"C:Writing hides attention"|"Writing hides attention"/.test(JSON.stringify(s.lanes[1])) &&
+          r1 === [`C:${tB}`, `C:${tA}`, `C:${tC}`].join("|") &&
+          s.lanes[1].some(x => x === `C:${tB}` || x === tB) &&
           m?.idx === 0 &&
           m.mode === "preview",
         note: `drag ok ${d1}; within: ${r1}; across: ${r2}; back w/ mode ${JSON.stringify(m)}`,

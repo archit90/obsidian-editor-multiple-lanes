@@ -1,5 +1,6 @@
-import { A, B, C, D, openIn, clickLine, st, eq, quick } from "./common.mjs";
-import { connect } from "../../editor-outliner/e2e/cdp.mjs";
+import { A, B, C, D, openIn, clickLine, eq, tB, tD } from "./common.mjs";
+import { connect } from "./cdp.mjs";
+import { PORT } from "./config.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 const wins = `app.workspace.floatingSplit.children.filter(w=>w.win)`;
 export const cases = [
@@ -25,7 +26,7 @@ export const cases = [
       // type in the popout card via its own CDP target
       let typed = null;
       try {
-        const p = await connect(9313, t => t.url === "about:blank" && !/Settings/.test(t.title));
+        const p = await connect(PORT, t => t.url === "about:blank" && !/Settings/.test(t.title));
         await p.ev(`(()=>{const ed=document.querySelector(".lane-item .cm-content"); ed.focus(); return 1})()`);
         await p.send("Input.insertText", { text: "POPTYPE " });
         await new Promise(r => setTimeout(r, 300));
@@ -67,7 +68,10 @@ export const cases = [
         `const L=T.tab().lanes[0]; L.togglePin(L.items.find(i=>i.file.path===${JSON.stringify(A)})); return 1`,
       );
       await clickLine(c, `T.tab().lanes[0].items.find(i=>i.file.path===${JSON.stringify(A)})`, 1);
-      await c.js(`app.commands.executeCommandById("workspace:move-to-new-window"); await T.sleep(2000); return 1`);
+      // what "Move to new window" (the tab menu, the command) calls: it returns the new window, as for a tab
+      const ret = await c.js(
+        `const w=app.workspace.moveLeafToPopout(app.workspace.activeLeaf); await T.sleep(2000); return {win: !!w?.win}`,
+      );
       const r = await c.js(
         `const t=app.workspace.getLeavesOfType("editor-lanes").find(l=>l.getRoot()===app.workspace.floatingSplit); const it=t?.view.lanes[0].items[0]; const main=app.workspace.getLeavesOfType("editor-lanes").find(l=>l.getRoot()===app.workspace.rootSplit); return {pop: it && {file: it.file.path, pinned: it.pinned, mounted: !!it.leaf}, main: main.view.lanes.map(l=>l.items.map(i=>i.file.basename))}`,
       );
@@ -78,12 +82,13 @@ export const cases = [
       await c.js(`for (const w of ${wins}) w.win.close(); await T.sleep(800); return 1`);
       return {
         ok:
+          ret.win &&
           r.pop?.file === A &&
           r.pop.pinned &&
           r.pop.mounted &&
-          eq(r.main[0], ["Writing hides attention"]) &&
-          r2.pop.flat().includes("Vocabulary predicts money"),
-        note: JSON.stringify({ r, r2 }),
+          eq(r.main[0], [tB]) &&
+          r2.pop.flat().includes(tD),
+        note: JSON.stringify({ ret, r, r2 }),
       };
     },
   },
@@ -118,7 +123,7 @@ export const cases = [
           r.lanes.length === 3 &&
           r.lanes.flat().length === 5 &&
           r.name === "Extra" &&
-          r.lanes.flat().includes("P:Vocabulary predicts money"),
+          r.lanes.flat().includes(`P:${tD}`),
         note: JSON.stringify(r),
       };
     },

@@ -1,7 +1,10 @@
-import { A, B, C, D, openIn, clickLine, clickLinkIn, st, eq } from "./common.mjs";
-const LONG = "_test/Outline mode.md";
+import { A, MANY, NOTES, LONG as LONG_WORDS, openIn, clickLine, eq, tA } from "./common.mjs";
+const LONG = NOTES.LONG.path;
+// `n` of the bulk notes (fixtures.mjs MANY), added at the bottom of lane `l`
+const many = n =>
+  `const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(${JSON.stringify(MANY.folder + "/")})).slice(0,${n}); for (const f of fs) await l.add(f,{focus:false, index: l.items.length});`;
 const fill = (n, lane = 0) =>
-  `const l=T.tab().lanes[${lane}]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/") && !/Writing (replaces caching|hides attention|delays interfaces)/.test(f.path)).slice(0,${n}); for (const f of fs) await l.add(f,{focus:false, index: l.items.length}); l.setAllCollapsed(true); await T.sleep(300); l.listEl.scrollTop=0; l.setAllCollapsed(false); await T.sleep(1500);`;
+  `const l=T.tab().lanes[${lane}]; ${many(n)} l.setAllCollapsed(true); await T.sleep(300); l.listEl.scrollTop=0; l.setAllCollapsed(false); await T.sleep(1500);`;
 const mounted = lane => `T.tab().lanes[${lane}].items.filter(i=>i.leaf).length`;
 const toBottom = async (c, lane = 0) => {
   const p = await c.at(`T.tab().lanes[${lane}].listEl`);
@@ -70,7 +73,7 @@ export const cases = [
       );
       // fold a heading through the fold command at line of "Stage B"
       const foldLine = await c.js(
-        `const e=T.tab().lanes[0].items[0].leaf.view.editor; const n=e.lineCount(); for (let i=0;i<n;i++) if (/^## Stage B/.test(e.getLine(i))) return i; return -1`,
+        `const e=T.tab().lanes[0].items[0].leaf.view.editor; const n=e.lineCount(); for (let i=0;i<n;i++) if (e.getLine(i).startsWith(${JSON.stringify(LONG_WORDS.foldHeading)})) return i; return -1`,
       );
       await c.js(
         `const e=T.tab().lanes[0].items[0].leaf.view.editor; e.setCursor({line:${foldLine},ch:0}); app.commands.executeCommandById("editor:toggle-fold"); await T.sleep(300); e.setSelection({line:40,ch:2},{line:41,ch:5}); return 1`,
@@ -79,9 +82,7 @@ export const cases = [
         `const it=T.tab().lanes[0].items[0]; const v=it.leaf.view; return {sel: v.editor.listSelections(), folds: v.currentMode.getFoldInfo?.()?.folds?.length ?? null, mode: v.getState().mode}`,
       );
       // make it far away: 60 cards below, move focus to a card far below and scroll there
-      await c.js(
-        `const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/") && !/Writing (replaces caching|hides attention|delays interfaces)/.test(f.path)).slice(0,60); for (const f of fs) await l.add(f,{focus:false, index: l.items.length}); await T.sleep(500); return 1`,
-      );
+      await c.js(`const l=T.tab().lanes[0]; ${many(60)} await T.sleep(500); return 1`);
       await toBottom(c, 0);
       await c.js(
         `const l=T.tab().lanes[0]; const last=l.items[l.items.length-1]; if(!last.leaf) await l.setCollapsed(last,false); app.workspace.setActiveLeaf(last.leaf,{focus:true}); await T.sleep(7000); return 1`,
@@ -113,9 +114,7 @@ export const cases = [
     id: "PK-03",
     run: async c => {
       await openIn(c, A, 0);
-      await c.js(
-        `const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/") && !/Writing (replaces caching|hides attention|delays interfaces)/.test(f.path)).slice(0,60); for (const f of fs) await l.add(f,{focus:false, index: l.items.length}); await T.sleep(500); return 1`,
-      );
+      await c.js(`const l=T.tab().lanes[0]; ${many(60)} await T.sleep(500); return 1`);
       await toBottom(c, 0);
       await c.js(
         `const l=T.tab().lanes[0]; const last=l.items[l.items.length-1]; if(!last.leaf) await l.setCollapsed(last,false); app.workspace.setActiveLeaf(last.leaf,{focus:true}); await T.sleep(7000); return 1`,
@@ -134,14 +133,14 @@ export const cases = [
         `return T.tab().lanes[0].items[0].el.querySelector(".document-search-count")?.textContent`,
       );
       await c.key("Escape");
-      // Outliner / editing: Tab on a list
+      // a link in the remounted card opens in the next lane
       await c.clickEl(
-        `[...T.tab().lanes[0].items[0].el.querySelectorAll(".cm-content .cm-underline")].find(e=>/Onboarding/.test(e.textContent))`,
+        `[...T.tab().lanes[0].items[0].el.querySelectorAll(".cm-content .cm-underline")].find(e=>e.textContent.includes(${JSON.stringify(NOTES.L4.title)}))`,
         { wait: 1000 },
       );
       const link = await c.js(`return T.lanes()[1]`);
       return {
-        ok: parked && /[0-9]+ . [0-9]+/.test(search || "") && /Onboarding/.test(link[0]),
+        ok: parked && /[0-9]+ . [0-9]+/.test(search || "") && link[0] === NOTES.L4.title,
         note: JSON.stringify({ parked, search, link }),
       };
     },
@@ -150,9 +149,7 @@ export const cases = [
     id: "PK-04",
     run: async c => {
       await openIn(c, A, 0);
-      await c.js(
-        `const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/") && !/Writing (replaces caching|hides attention|delays interfaces)/.test(f.path)).slice(0,60); for (const f of fs) await l.add(f,{focus:false, index: l.items.length}); await T.sleep(500); return 1`,
-      );
+      await c.js(`const l=T.tab().lanes[0]; ${many(60)} await T.sleep(500); return 1`);
       // A stays the active card while the lane scrolls far away
       await clickLine(c, `T.tab().lanes[0].items[0]`, 1);
       await c.js(
@@ -162,45 +159,43 @@ export const cases = [
         `const it=T.tab().lanes[0].items[0]; return {leaf: !!it.leaf, active: T.active(), scrolled: T.tab().lanes[0].listEl.scrollTop, mounted: ${mounted(0)}}`,
       );
       return {
-        ok: r.leaf && r.active.startsWith("card:Writing replaces caching") && r.scrolled > 20000,
+        ok: r.leaf && r.active.startsWith(`card:${tA}`) && r.scrolled > 20000,
         note: JSON.stringify(r),
       };
     },
   },
   {
     id: "PK-05",
+    needs: ["editor-outliner"],
     run: async c => {
-      await c.js(`await app.vault.modify(T.f("_test/EL list.md"),"- a\\n- b"); return 1`);
+      await c.js(`await T.note("_test/EL list.md","- a\\n- b"); return 1`);
       await openIn(c, "_test/EL list.md", 0);
-      await c.js(
-        `const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/") && !/Writing (replaces caching|hides attention|delays interfaces)/.test(f.path)).slice(0,60); for (const f of fs) await l.add(f,{focus:false, index: l.items.length}); await T.sleep(300); return 1`,
-      );
+      await c.js(`const l=T.tab().lanes[0]; ${many(60)} await T.sleep(300); return 1`);
       await toBottom(c, 0);
       await c.js(
         `const l=T.tab().lanes[0]; const last=l.items[l.items.length-1]; if(!last.leaf) await l.setCollapsed(last,false); app.workspace.setActiveLeaf(last.leaf,{focus:true}); await T.sleep(7000); return 1`,
       );
       const parked = await c.js(`return !T.tab().lanes[0].items[0].leaf`);
       await c.js(`T.tab().lanes[0].listEl.scrollTop=0; await T.sleep(2000); return 1`);
-      await clickLine(c, "T.tab().lanes[0].items[0]", 1);
+      // an Outliner key (Ctrl+↓ moves the item down) in the remounted card
+      await clickLine(c, "T.tab().lanes[0].items[0]", 0);
       await c.key("End");
-      await c.key("Tab");
+      await c.key("ArrowDown", { ctrl: true });
       await c.sleep(300);
       const v = await c.js(`return T.tab().lanes[0].items[0].leaf.view.editor.getValue()`);
-      return { ok: parked && /^- a\n\s+- b$/.test(v), note: JSON.stringify({ parked, v }) };
+      return { ok: parked && v === "- b\n- a", note: JSON.stringify({ parked, v }) };
     },
   },
   {
     id: "PK-07",
     run: async c => {
-      await c.js(`await app.vault.modify(T.f("_test/EL u1.md"),"base"); return 1`);
+      await c.js(`await T.note("_test/EL u1.md","base"); return 1`);
       await openIn(c, "_test/EL u1.md", 0);
       await clickLine(c, "T.tab().lanes[0].items[0]", 0);
       await c.key("End");
       await c.type(" x");
       await c.sleep(2500);
-      await c.js(
-        `const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/") && !/Writing (replaces caching|hides attention|delays interfaces)/.test(f.path)).slice(0,60); for (const f of fs) await l.add(f,{focus:false, index: l.items.length}); await T.sleep(300); return 1`,
-      );
+      await c.js(`const l=T.tab().lanes[0]; ${many(60)} await T.sleep(300); return 1`);
       await toBottom(c, 0);
       await c.js(
         `const l=T.tab().lanes[0]; const last=l.items[l.items.length-1]; if(!last.leaf) await l.setCollapsed(last,false); app.workspace.setActiveLeaf(last.leaf,{focus:true}); await T.sleep(7000); return 1`,
@@ -212,7 +207,7 @@ export const cases = [
       await c.key("z", { ctrl: true });
       await c.sleep(300);
       const v = await c.js(`return T.tab().lanes[0].items[0].leaf.view.editor.getValue()`);
-      await c.js(`await T.sleep(2200); await app.vault.modify(T.f("_test/EL u1.md"),"base"); return 1`);
+      await c.js(`await T.sleep(2200); await T.note("_test/EL u1.md","base"); return 1`);
       return { ok: parked && v === "base", note: JSON.stringify({ parked, afterUndo: v }) };
     },
   },

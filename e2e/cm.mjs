@@ -1,4 +1,4 @@
-import { A, B, C, D, openIn, clickLine, st, eq, quick } from "./common.mjs";
+import { A, B, openIn, clickLine, st, eq, tA, tB, tD } from "./common.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
 const pal = async (c, name) => {
   await c.key("p", { ctrl: true });
@@ -31,7 +31,7 @@ export const cases = [
       log.close = await pal(c, "Editor Multiple Lanes: Close all notes in the current");
       log.closeR = (await st(c)).lanes[0];
       log.openNote = await pal(c, "Editor Multiple Lanes: Open note in an editor lane");
-      await c.type("Vocabulary predicts money");
+      await c.type(tD);
       await c.sleep(600);
       await c.key("Enter");
       await c.sleep(800);
@@ -42,12 +42,12 @@ export const cases = [
       log.toggleR = await c.js(`return T.P().settings.lanesOnly`);
       await pal(c, "Editor Multiple Lanes: Toggle editor lanes only");
       const ok =
-        eq(log.pinR, ["P:Writing hides attention", "Writing replaces caching"]) &&
-        eq(log.nextR[1], ["Writing replaces caching"]) &&
+        eq(log.pinR, [`P:${tB}`, tA]) &&
+        eq(log.nextR[1], [tA]) &&
         log.prevR[1].length === 0 &&
-        eq(log.collR, ["P:C:Writing hides attention", "C:Writing replaces caching"]) &&
-        eq(log.closeR, ["P:C:Writing hides attention"]) &&
-        log.openNoteR.flat().includes("Vocabulary predicts money") &&
+        eq(log.collR, [`P:C:${tB}`, `C:${tA}`]) &&
+        eq(log.closeR, [`P:C:${tB}`]) &&
+        log.openNoteR.flat().includes(tD) &&
         log.newTabR.n === 2 &&
         log.toggleR === false;
       return { ok, note: JSON.stringify(log) };
@@ -60,7 +60,7 @@ export const cases = [
         `await T.reset(); const l=app.workspace.getLeaf("tab"); await l.setViewState({type:"graph",active:true}); for (const x of app.workspace.getLeavesOfType("editor-lanes")) x.detach(); await T.sleep(300); return 1`,
       );
       const r = await c.js(
-        `const ids=["change-layout","rename-tab","open-current","open-current-new-lane","toggle-pin","move-next-lane","move-previous-lane"].map(i=>"editor-multiple-lanes:"+i); const av = ids.filter(id=>{ const cmd=app.commands.findCommand(id); return cmd.checkCallback ? cmd.checkCallback(true) : true}); app.commands.executeCommandById("editor-multiple-lanes:close-all"); app.commands.executeCommandById("editor-multiple-lanes:collapse-all"); await T.sleep(300); return {av, roots: T.roots()}`,
+        `const ids=["change-layout","rename-tab","open-current","open-current-new-lane","toggle-pin","move-next-lane","move-previous-lane","close-all","collapse-all"].map(i=>"editor-multiple-lanes:"+i); const av = ids.filter(id=>{ const cmd=app.commands.findCommand(id); return cmd.checkCallback ? cmd.checkCallback(true) : true}); app.commands.executeCommandById("editor-multiple-lanes:close-all"); app.commands.executeCommandById("editor-multiple-lanes:collapse-all"); await T.sleep(300); return {av, roots: T.roots()}`,
       );
       return { ok: r.av.length === 0, note: JSON.stringify(r) };
     },
@@ -73,7 +73,7 @@ export const cases = [
       );
       const s = await st(c);
       return {
-        ok: s.lanes.flat().includes("Writing replaces caching") && s.roots.includes("markdown:" + A),
+        ok: s.lanes.flat().includes(tA) && s.roots.includes("markdown:" + A),
         note: JSON.stringify(s),
       };
     },

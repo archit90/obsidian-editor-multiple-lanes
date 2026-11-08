@@ -1,2 +1,3 @@
 #!/bin/bash
-CDP_PORT=9313 exec node ../../editor-outliner/e2e/cdp.mjs "$1"
+# e2e/e '<js expression>': evaluate in the sandbox's Obsidian (e2e/eval.mjs), e.g. e2e/e "$(cat e2e/state.js)"
+exec node "$(dirname "$0")/eval.mjs" "$1"

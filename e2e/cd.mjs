@@ -1,5 +1,6 @@
-import { A, B, C, D, MOD, openIn, explorerClick, clickLinkIn, quick, st, eq, headerClick } from "./common.mjs";
+import { A, DIR, NOTES, MOD, openIn, st, tA } from "./common.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
+const STAMPED = NOTES.STAMPED;
 export const cases = [
   {
     id: "CD-01",
@@ -7,16 +8,17 @@ export const cases = [
       await openIn(c, A, 0);
       c.shot("CD-01");
       const r = await c.js(
-        `const it=${item(0, 0)}; const h=it.el.querySelector(".lane-item-header"); return {kids:[...h.children].map(e=>e.className.split(" ")[0]), path: it.pathEl.textContent, title: it.titleEl.textContent, inline: getComputedStyle(it.el.querySelector(".inline-title")).display, vh: getComputedStyle(it.el.querySelector(".view-header")).display, lp: it.leaf.view.getMode(), source: it.leaf.view.getState().source, editable: it.titleEl.contentEditable}`,
+        `const it=${item(0, 0)}; const h=it.el.querySelector(".lane-item-header"); return {kids:[...h.children].map(e=>e.className.split(" ")[0]), path: it.pathEl.textContent, title: it.titleEl.textContent, inline: getComputedStyle(it.el.querySelector(".inline-title")).display, vh: getComputedStyle(it.el.querySelector(".view-header")).display, lp: it.leaf.view.getMode(), source: it.leaf.view.getState().source, editable: it.titleEl.contentEditable, doc: it.el.ownerDocument===it.el.closest(".lane").ownerDocument}`,
       );
       return {
         ok:
-          r.path.replace(/\u200E/g, "") === "z/" &&
-          r.title === "Writing replaces caching" &&
+          r.path.replace(/‎/g, "") === `${DIR}/` &&
+          r.title === tA &&
           r.inline === "none" &&
           r.vh === "none" &&
           r.lp === "source" &&
           r.source === false &&
+          r.doc &&
           r.kids.join() === "lane-chevron,lane-item-name,lane-sr-only,lane-mode,lane-pin,lane-close",
         note: JSON.stringify(r),
       };
@@ -25,9 +27,7 @@ export const cases = [
   {
     id: "CD-02",
     run: async c => {
-      await c.js(
-        `if(!T.f("_test/deep/very/long/folder/name/for/the/test/EL deep note.md")) { await app.vault.createFolder("_test/deep/very/long/folder/name/for/the/test").catch(()=>0); await app.vault.create("_test/deep/very/long/folder/name/for/the/test/EL deep note.md","deep"); } return 1`,
-      );
+      await c.js(`await T.note("_test/deep/very/long/folder/name/for/the/test/EL deep note.md","deep"); return 1`);
       await openIn(c, "_test/deep/very/long/folder/name/for/the/test/EL deep note.md", 0);
       c.shot("CD-02");
       const r = await c.js(
@@ -58,7 +58,7 @@ export const cases = [
     id: "CD-04",
     run: async c => {
       await c.js(
-        `for (const p of ["_test/EL rename.md","_test/EL renamed.md","_test/EL linker.md"]) if(T.f(p)) await app.vault.delete(T.f(p)); await app.vault.create("_test/EL rename.md","body"); await app.vault.create("_test/EL linker.md","see [[_test/EL rename]]"); await T.sleep(500); return 1`,
+        `for (const p of ["_test/EL rename.md","_test/EL renamed.md","_test/EL renamed2.md","_test/EL linker.md"]) if(T.f(p)) await app.vault.delete(T.f(p)); await T.note("_test/EL rename.md","body"); await T.note("_test/EL linker.md","see [[_test/EL rename]]"); await T.sleep(500); return 1`,
       );
       await openIn(c, "_test/EL rename.md", 0);
       await c.clickEl(`${item(0, 0)}.titleEl`);
@@ -106,41 +106,48 @@ export const cases = [
   {
     id: "CD-05",
     run: async c => {
-      await c.js(
-        `for (const p of ["_test/EL refuse.md","_test/EL taken.md"]) if(!T.f(p)) await app.vault.create(p,"x"); return 1`,
-      );
+      await c.js(`for (const p of ["_test/EL refuse.md","_test/EL taken.md"]) await T.note(p,"x"); return 1`);
       await openIn(c, "_test/EL refuse.md", 0);
       const tries = ["a/b", "a:b", ".x", "x.md", "EL taken", "a#b", "a|b", "a?b"];
       const out = [];
-      for (const t of tries) {
+      const rename = async (to, expectPath) => {
         await c.clickEl(`${item(0, 0)}.titleEl`);
         await c.key("a", { ctrl: true });
-        await c.type(t);
+        await c.type(to);
         await c.key("Enter");
         await c.sleep(700);
-        out.push(
-          await c.js(
-            `return {t:${JSON.stringify(t)}, exists: !!T.f("_test/EL refuse.md"), title: ${item(0, 0)}.titleEl.textContent, notice: [...document.querySelectorAll(".notice")].map(n=>n.textContent).pop()}`,
-          ),
+        const r = await c.js(
+          `return {exists: !!T.f(${JSON.stringify(expectPath)}), title: ${item(0, 0)}.titleEl.textContent, notice: [...document.querySelectorAll(".notice")].map(n=>n.textContent).pop()}`,
         );
         await c.js(`document.querySelectorAll(".notice").forEach(n=>n.remove()); T.P().noticeAt=0; return 1`);
-      }
-      // 0/ log without timestamp
-      const log = await c.js(
-        `return app.vault.getMarkdownFiles().find(f=>f.parent?.path==="0" && /^\\d{4}-\\d{2}-\\d{2}-\\d{6}/.test(f.basename))?.path`,
-      );
-      await openIn(c, log, 0);
-      await c.clickEl(`${item(0, 0)}.titleEl`);
-      await c.key("a", { ctrl: true });
-      await c.type("no stamp");
-      await c.key("Enter");
-      await c.sleep(700);
-      const lr = await c.js(
-        `return {exists: !!T.f(${JSON.stringify(log)}), notice: [...document.querySelectorAll(".notice")].map(n=>n.textContent).pop()}`,
+        return r;
+      };
+      for (const t of tries) out.push({ t, ...(await rename(t, "_test/EL refuse.md")) });
+      // a name with a date-time prefix keeps one ("Keep a date-time prefix when renaming", any folder)
+      await c.js(`for (const l of T.tab().lanes) for (const it of [...l.items]) l.close(it); return 1`);
+      await openIn(c, STAMPED.path, 0);
+      const kept = await rename("EL no stamp", STAMPED.path);
+      const keptOk = kept.exists && kept.title === STAMPED.title && /date-time prefix/.test(kept.notice || "");
+      // …and loses it with the setting off
+      await c.js(`T.P().settings.keepStampPrefix=false; await T.P().saveSettings(); return 1`);
+      const off = await rename("EL no stamp", `${DIR}/EL no stamp.md`);
+      await c.js(
+        `T.P().settings.keepStampPrefix=true; await T.P().saveSettings(); const f=T.f(${JSON.stringify(`${DIR}/EL no stamp.md`)}); if(f) await app.fileManager.renameFile(f, ${JSON.stringify(STAMPED.path)}); return 1`,
       );
       const ok =
-        out.every(o => o.exists && o.title === "EL refuse" && o.notice) && lr.exists && /prefix/.test(lr.notice || "");
-      return { ok, note: JSON.stringify(out.map(o => o.t + "→" + o.notice)) + " log:" + JSON.stringify(lr) };
+        out.every(o => o.exists && o.title === "EL refuse" && o.notice) &&
+        keptOk &&
+        off.exists &&
+        off.title === "EL no stamp";
+      return {
+        ok,
+        note:
+          JSON.stringify(out.map(o => o.t + "→" + o.notice)) +
+          " stamp kept:" +
+          JSON.stringify(kept) +
+          " off:" +
+          JSON.stringify(off),
+      };
     },
   },
   {
@@ -151,7 +158,7 @@ export const cases = [
       await c.key("ArrowDown");
       await c.sleep(300);
       const r = await c.js(`return {inEditor: !!document.activeElement.closest(".cm-editor"), active: T.active()}`);
-      return { ok: r.inEditor && r.active.startsWith("card:Writing replaces"), note: JSON.stringify(r) };
+      return { ok: r.inEditor && r.active.startsWith(`card:${tA}`), note: JSON.stringify(r) };
     },
   },
   {
@@ -161,7 +168,7 @@ export const cases = [
       await c.clickEl(`${item(0, 0)}.titleEl`, { mods: MOD.ctrl, wait: 1000 });
       const s = await st(c);
       return {
-        ok: s.roots.length === 2 && s.active.startsWith("card:Writing replaces caching@0"),
+        ok: s.roots.length === 2 && s.active.startsWith(`card:${tA}@0`),
         note: JSON.stringify(s),
       };
     },

@@ -1,4 +1,4 @@
-import { A, B, C, D, openIn, st, eq } from "./common.mjs";
+import { MANY, NOTES, eq } from "./common.mjs";
 import { settingsWin } from "./lib.mjs";
 export const cases = [
   {
@@ -23,6 +23,7 @@ export const cases = [
         "Header size=comfortable",
         "Note height=grow",
         "Maximum note height=600 [hidden]",
+        "Keep a date-time prefix when renaming=true",
         "Show backlinks panes under lane notes=true",
         "Pre-load distance=300",
         "Dropping a note or link onto a note's text=insert",
@@ -73,7 +74,7 @@ export const cases = [
     id: "SE-03",
     run: async c => {
       await c.js(
-        `T.P().settings.lanesOnly=false; await T.P().settingsChanged("routing"); const l=app.workspace.getLeaf("tab"); await l.openFile(T.f("README.md")); await T.sleep(300); T.P().settings.lanesOnly=true; T.P().settings.routeExceptions="README"; await T.P().settingsChanged("routing"); await T.sleep(500); return 1`,
+        `T.P().settings.lanesOnly=false; await T.P().settingsChanged("routing"); const l=app.workspace.getLeaf("tab"); await l.openFile(T.f(${JSON.stringify(NOTES.README.path)})); await T.sleep(300); T.P().settings.lanesOnly=true; T.P().settings.routeExceptions="README"; await T.P().settingsChanged("routing"); await T.sleep(500); return 1`,
       );
       const s = await settingsWin(c);
       const ta = `${s.row("Exceptions to lanes only")}.querySelector("textarea")`;
@@ -97,7 +98,9 @@ export const cases = [
       await s.close();
       return {
         ok:
-          mid.includes("markdown:README.md") && !after.roots.includes("markdown:README.md") && after.saved === "READX",
+          mid.includes("markdown:" + NOTES.README.path) &&
+          !after.roots.includes("markdown:" + NOTES.README.path) &&
+          after.saved === "READX",
         note: JSON.stringify({ mid, after }),
       };
     },
@@ -106,7 +109,7 @@ export const cases = [
     id: "SE-04",
     run: async c => {
       await c.js(
-        `T.P().settings.preloadDistance=3000; await T.P().settingsChanged("looks"); const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith("z/")).slice(0,25); for (const f of fs) await l.add(f,{focus:false}); l.setAllCollapsed(true); l.listEl.scrollTop=0; l.setAllCollapsed(false); await T.sleep(4000); return 1`,
+        `T.P().settings.preloadDistance=3000; await T.P().settingsChanged("looks"); const l=T.tab().lanes[0]; const fs=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(${JSON.stringify(MANY.folder + "/")})).slice(0,25); for (const f of fs) await l.add(f,{focus:false}); l.setAllCollapsed(true); l.listEl.scrollTop=0; l.setAllCollapsed(false); await T.sleep(4000); return 1`,
       );
       const big = await c.js(`return T.tab().lanes[0].items.filter(i=>i.leaf).length`);
       await c.js(

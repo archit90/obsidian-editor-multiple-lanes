@@ -12,9 +12,10 @@ export const LEGACY_VIEW_TYPE = "editor-lane";
  */
 export const OLD_NAV_VIEW_TYPE = "editor-lanes-navigator";
 export const SWALLOW_MS = 700; // after a shift-mousedown we handled, ignore the matching mouseup/click
+/** An open is matched to the getLeaf call that picked its leaf within this time. */
 export const INTENT_MS = 2000;
 /** How long after the plugin is enabled at runtime its lanes tabs may still be on their way back. */
-export const RESTORE_MS = 5000; // an open is matched to the getLeaf call that picked its leaf within this time
+export const RESTORE_MS = 5000;
 
 export interface ItemData {
   path: string;
@@ -46,7 +47,7 @@ export interface MountState {
   mode?: string;
   source?: boolean;
   eState?: Record<string, unknown>;
-  /** "Note height: capped": the card body's own scroll position (a card parked while far away, EL-19). */
+  /** "Note height: capped": the card body's own scroll position (a card parked while far away). */
   bodyScroll?: number;
 }
 
@@ -74,8 +75,10 @@ export interface Item {
   mountedView?: string;
   /** The mode button's last state, so it's only redrawn when the mode changes. */
   shownMode?: string;
-  /** Unmounted while far from view (EL-19): its body keeps its height until it mounts again. */
+  /** Unmounted while far from view: its body keeps its height until it mounts again. */
   parked?: boolean;
+  /** "Couldn't open this note.", shown after a failed mount until the next one starts. */
+  errorEl?: HTMLElement | null;
 }
 
 /** Where an open goes: the last-used lane, the next lane of the source tab, a new lanes tab, or the source lane. */
@@ -86,6 +89,12 @@ export interface Intent {
   from: Lane | null;
   /** The card in `from` the open came from (a link followed in it), for "New notes go: after". */
   fromItem: Item | null;
+  /**
+   * The open is a link being followed: getLeaf was called inside workspace.openLinkText (Live Preview / Reading
+   * view / hover popover link clicks, "Follow link under cursor", Backlinks Full View's links). Only then does
+   * `from` make it "a link followed in a card"; Ctrl/Cmd+N, templates and hotkeys typed in a card don't.
+   */
+  link: boolean;
   paneType: unknown;
   /** The picked leaf was already the active one (getUnpinnedLeaf reused it, e.g. an empty tab you're in). */
   wasActive: boolean;

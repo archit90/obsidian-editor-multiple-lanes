@@ -1,8 +1,7 @@
-import { open } from "./lib.mjs";
+// node e2e/fit.mjs: the sandbox window back to its size (config.mjs WINDOW), e.g. after a phone-sized case stopped
+import { WINDOW } from "./config.mjs";
+import { open, resize } from "./lib.mjs";
+
 const c = await open();
-console.log(
-  await c.ev(
-    `(async()=>{const r=require("electron").remote||require("@electron/remote"); r.getCurrentWindow().setBounds({x:0,y:0,width:1528,height:955}); await new Promise(r=>setTimeout(r,600)); return innerWidth+"x"+innerHeight})()`,
-  ),
-);
+console.log(await resize(c, WINDOW.width, WINDOW.height));
 c.close();

@@ -1,3 +1,5 @@
+// Evaluated in the sandbox's Obsidian before every case (run.mjs): the `T` helpers the cases use.
+// window.__lanesFixtures (path → content, from fixtures.mjs coreNotes) is set by the runner first.
 (() => {
   const T = (window.T = {});
   T.P = () => app.plugins.plugins["editor-multiple-lanes"];
@@ -24,9 +26,32 @@
     });
     return a;
   };
+  // a note with this text: created (with its folders) or overwritten
+  T.note = async (path, text) => {
+    const f = T.f(path);
+    if (f) {
+      if ((await app.vault.read(f)) !== text) await app.vault.modify(f, text);
+      return f;
+    }
+    const dir = path.split("/").slice(0, -1).join("/");
+    if (dir && !app.vault.getAbstractFileByPath(dir)) await app.vault.createFolder(dir).catch(() => 0);
+    return app.vault.create(path, text);
+  };
+  // the fixture notes as fixtures.mjs makes them (a case before may have edited, renamed or deleted one)
+  T.restoreFixtures = async () => {
+    const fx = window.__lanesFixtures || {};
+    let n = 0;
+    for (const [path, text] of Object.entries(fx)) {
+      const f = T.f(path);
+      if (!f || (await app.vault.read(f)) !== text) {
+        await T.note(path, text);
+        n++;
+      }
+    }
+    return n;
+  };
   T.defaults = async () => {
     const P = T.P();
-    const keep = P.settings.defaultLayout;
     Object.assign(P.settings, {
       lanesOnly: true,
       linkTarget: "next",
@@ -41,13 +66,14 @@
       headerSize: "comfortable",
       noteHeight: "grow",
       noteMaxHeight: 600,
+      keepStampPrefix: true,
       showBacklinks: true,
       preloadDistance: 300,
       dropOnText: "insert",
     });
-    await P.settingsChanged("routing");
+    await P.settingsChanged("all");
   };
-  // one lanes tab, empty, default layout, in the main window
+  // one lanes tab, empty, default layout, in the main window; the fixture notes as they were
   T.reset = async () => {
     await T.defaults();
     for (const w of app.workspace.floatingSplit.children.slice()) {
@@ -79,11 +105,17 @@
     if (t.layoutInfo().own) await t.setLayout(null);
     for (const l of t.lanes) for (const it of [...l.items]) l.close(it);
     t.sizes = null;
+    await T.restoreFixtures();
     app.workspace.setActiveLeaf(keep, { focus: true });
     window.__errs = [];
     await T.sleep(300);
     return T.roots();
   };
-  T.st = () => ({ active: T.active(), lanes: T.lanes(), roots: T.roots(), errs: window.__errs });
+  T.st = () => ({
+    active: T.active(),
+    lanes: T.lanes(),
+    roots: T.roots(),
+    errs: (window.__errs || []).filter(e => !/ResizeObserver/.test(e)),
+  });
   return "ok";
 })();

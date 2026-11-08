@@ -42,6 +42,16 @@ describe("loadSettings", () => {
   it("has a valid default layout", () => {
     expect(parseLayout(DEFAULTS.defaultLayout).ok).toBe(true);
   });
+  it("keeps a saved default layout only if it's a valid layout", () => {
+    expect(loadSettings({ defaultLayout: "40, 30x2, 30" }).defaultLayout).toBe("40, 30x2, 30");
+    expect(loadSettings({ defaultLayout: "abc" }).defaultLayout).toBe(DEFAULTS.defaultLayout);
+    expect(loadSettings({ defaultLayout: "30x9" }).defaultLayout).toBe(DEFAULTS.defaultLayout);
+  });
+  it("keeps a date-time prefix when renaming unless turned off", () => {
+    expect(DEFAULTS.keepStampPrefix).toBe(true);
+    expect(loadSettings({ keepStampPrefix: false }).keepStampPrefix).toBe(false);
+    expect(loadSettings({ keepStampPrefix: "no" }).keepStampPrefix).toBe(true);
+  });
   it("doesn't share state with DEFAULTS", () => {
     const s = loadSettings({});
     s.maxNotesPerLane = 4;

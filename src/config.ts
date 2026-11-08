@@ -1,4 +1,5 @@
 // The plugin's settings: their shape, defaults and a tolerant loader. No Obsidian imports, so it can be tested.
+import { parseLayout } from "./layout";
 
 /** "Link clicked in a lane opens in": the lane to its right (sliding panes), the same lane, or the lane used last. */
 export type LinkTarget = "next" | "same" | "last";
@@ -30,6 +31,9 @@ export interface Settings {
   headerSize: HeaderSize;
   noteHeight: NoteHeight;
   noteMaxHeight: number; // px, with noteHeight "cap"
+  // Renaming
+  /** A note named "YYYY-MM-DD-HHmmss …" keeps a date-time prefix when renamed from its card title. */
+  keepStampPrefix: boolean;
   // Performance
   showBacklinks: boolean;
   preloadDistance: number; // px
@@ -52,6 +56,7 @@ export const DEFAULTS: Settings = {
   headerSize: "comfortable",
   noteHeight: "grow",
   noteMaxHeight: 600,
+  keepStampPrefix: true,
   showBacklinks: true,
   preloadDistance: 300,
   dropOnText: "insert",
@@ -102,6 +107,8 @@ export function loadSettings(saved: unknown): Settings {
       if (n !== null) o[key] = n;
     } else if (typeof def === "boolean") {
       if (typeof v === "boolean") o[key] = v;
+    } else if (key === "defaultLayout") {
+      if (typeof v === "string" && parseLayout(v).ok) o[key] = v; // an invalid layout would be one lane
     } else if (typeof def === "string") {
       if (typeof v === "string") o[key] = v;
     }

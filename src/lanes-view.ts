@@ -1,4 +1,5 @@
-import { ItemView, Menu, Platform, ViewStateResult, WorkspaceLeaf, debounce } from "obsidian";
+import { ItemView, Menu, Platform, ViewStateResult, WorkspaceLeaf } from "obsidian";
+import { debounce } from "./debounce";
 import type EditorLanesPlugin from "./main";
 import { Lane } from "./lane";
 import { LayoutModal } from "./layout-modal";
@@ -16,7 +17,7 @@ import {
 } from "./layout";
 import { TabNameModal } from "./tab-name-modal";
 import { TAB_TITLE_PREFIX } from "./tab-names";
-import { fitLanes, readTabState } from "./tab-state";
+import { fitLanes, readTabState, savedTabName } from "./tab-state";
 import { LEGACY_VIEW_TYPE, OLD_NAV_VIEW_TYPE, VIEW_TYPE } from "./types";
 
 const ONE_LANE: LayoutColumn[] = [{ width: 100, rows: 1 }];
@@ -352,7 +353,7 @@ export class LanesView extends ItemView {
   /** Change the layout and move lanes / notes as `plan` says (or by order). Runs one at a time. */
   private relayout(plan?: RelayoutPlan): Promise<void> {
     const run = this.relaying.then(() => this.relayoutNow(plan));
-    this.relaying = run.catch(e => console.error("[editor-lanes] could not change the lane layout", e));
+    this.relaying = run.catch(e => console.error("[editor-multiple-lanes] could not change the lane layout", e));
     return run;
   }
 
@@ -378,10 +379,20 @@ export class LanesView extends ItemView {
     this.save();
   }
 
-  /** The settings changed: looks and, for a tab without its own layout, the default layout. */
+  /** Every setting this tab shows: looks, the lanes' own settings, and the default layout. */
   applySettings() {
     this.applyLooks();
+    this.applyLaneSettings();
+    this.applyLayoutSetting();
+  }
+
+  /** The lanes' own settings: card titles (show folder), pre-load distance. */
+  applyLaneSettings() {
     for (const l of this.lanes) l.applySettings();
+  }
+
+  /** A tab without its own layout follows the default one in the settings. */
+  applyLayoutSetting() {
     const cols = this.layoutColumns();
     if (formatLayout(cols) !== formatLayout(this.columns) || laneCount(cols) !== this.lanes.length) {
       void this.relayout();
@@ -389,14 +400,15 @@ export class LanesView extends ItemView {
   }
 
   /** Settings that change how cards look (on the tab's element, so tabs in popouts follow too). */
-  private applyLooks() {
+  applyLooks() {
     const s = this.plugin.settings;
     const root = this.contentEl;
     root.toggleClass("lane-compact", s.headerSize === "compact");
     root.toggleClass("lane-capped", s.noteHeight === "cap");
     root.style.setProperty("--lane-note-max-height", `${s.noteMaxHeight}px`);
-    // Backlinks Full View skips note views inside an element with this attribute (and the CSS hides its panes
-    // if an older BFV doesn't know it): a cheap cross-plugin signal, no API between the plugins needed.
+    // Backlinks Full View skips note views inside an element with this attribute: a cheap cross-plugin signal
+    // through the DOM, no API between the plugins (see SPEC.md, Working with other plugins). Lanes never styles
+    // BFV's own elements.
     if (s.showBacklinks) root.removeAttribute("data-bfv-skip");
     else root.setAttribute("data-bfv-skip", "editor-lanes");
   }
@@ -496,6 +508,62 @@ export class LanesView extends ItemView {
         .setIcon("layout-grid")
         .onClick(() => this.openLayoutDialog()),
     );
+  }
+}
+
+/**
+ * A lanes tab while this Obsidian can't host notes in lanes (hosting.ts probeInternals failed at load): it keeps
+ * the tab's saved state exactly as it was, so nothing is lost until a version that works is installed, and lists
+ * the tab's notes as links that open in normal tabs.
+ */
+export class UnsupportedLanesView extends ItemView {
+  private saved: Record<string, unknown> = {};
+
+  constructor(
+    leaf: WorkspaceLeaf,
+    private reason: string,
+  ) {
+    super(leaf);
+    this.navigation = false;
+  }
+  getViewType() {
+    return VIEW_TYPE;
+  }
+  getDisplayText() {
+    return `${TAB_TITLE_PREFIX}${savedTabName(this.saved) ?? "(off)"}`;
+  }
+  override getIcon() {
+    return "columns-3";
+  }
+  override getState(): Record<string, unknown> {
+    return this.saved;
+  }
+  override async setState(state: unknown, result: ViewStateResult) {
+    this.saved = state && typeof state === "object" ? { ...(state as Record<string, unknown>) } : {};
+    this.render();
+    await super.setState(state, result);
+  }
+  override async onOpen() {
+    this.render();
+  }
+
+  private render() {
+    const el = this.contentEl;
+    el.empty();
+    el.addClass("lanes-unsupported");
+    el.createEl("p", {
+      text: `Editor Multiple Lanes is off: this Obsidian version can't host notes in lanes (missing: ${this.reason}). This lanes tab is kept as it was; its notes:`,
+    });
+    const list = el.createEl("ul");
+    for (const lane of readTabState(this.saved).lanes) {
+      for (const d of lane) {
+        const a = list.createEl("li").createEl("a", { cls: "internal-link", text: d.path, href: d.path });
+        a.addEventListener("click", e => {
+          e.preventDefault();
+          void this.app.workspace.openLinkText(d.path, "", "tab");
+        });
+      }
+    }
   }
 }
 

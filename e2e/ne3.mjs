@@ -1,12 +1,13 @@
-import { A, B, C, D, MOD, openIn, clickLine, st, eq } from "./common.mjs";
+import { NOTES, openIn, clickLine } from "./common.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
-const LONG = "_test/Outline mode.md";
+const LONG = NOTES.LONG.path;
 export const cases = [
   {
     id: "NE-17",
     run: async c => {
+      const vim = await c.js(`return !!app.vault.getConfig("vimMode")`);
       await c.js(
-        `if(T.f("_test/EL vim.md")) await app.vault.modify(T.f("_test/EL vim.md"),"one\\ntwo\\nthree"); else await app.vault.create("_test/EL vim.md","one\\ntwo\\nthree"); app.vault.setConfig("vimMode", true); app.workspace.updateOptions(); await T.sleep(300); return 1`,
+        `await T.note("_test/EL vim.md","one\\ntwo\\nthree"); app.vault.setConfig("vimMode", true); app.workspace.updateOptions(); await T.sleep(300); return 1`,
       );
       await openIn(c, "_test/EL vim.md", 0);
       await clickLine(c, item(0, 0), 0);
@@ -32,7 +33,7 @@ export const cases = [
       const s1 = await c.js(
         `return {scroll: T.tab().lanes[1].listEl.scrollTop, line: ${item(1, 0)}.leaf.view.editor.getCursor().line}`,
       );
-      await c.js(`app.vault.setConfig("vimMode", false); app.workspace.updateOptions(); return 1`);
+      await c.js(`app.vault.setConfig("vimMode", ${vim}); app.workspace.updateOptions(); return 1`); // the vault's own
       return {
         ok: r1.line === 1 && v === "one\ntwoX\nthree" && u === "one\ntwo\nthree",
         note: JSON.stringify({ r1, v, u, ctrlD: { s0, ...s1 } }),

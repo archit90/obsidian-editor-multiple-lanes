@@ -1,20 +1,6 @@
-import {
-  A,
-  B,
-  C,
-  D,
-  MOD,
-  openIn,
-  explorerClick,
-  clickLinkIn,
-  quick,
-  st,
-  eq,
-  headerClick,
-  clickLine,
-} from "./common.mjs";
+import { A, B, NOTES, LONG as LONG_WORDS, openIn, clickLinkIn, clickLine, tB } from "./common.mjs";
 const item = (lane, i) => `T.tab().lanes[${lane}].items[${i}]`;
-const LONG = "_test/Outline mode.md";
+const LONG = NOTES.LONG.path;
 export const cases = [
   {
     id: "NE-01",
@@ -30,7 +16,7 @@ export const cases = [
         `return {active: T.active(), status: document.querySelector(".status-bar-item.plugin-word-count")?.textContent}`,
       );
       return {
-        ok: r.file === A && r.ed === A && r2.active.startsWith("card:Writing hides") && r.status !== r2.status,
+        ok: r.file === A && r.ed === A && r2.active.startsWith(`card:${tB}`) && r.status !== r2.status,
         note: JSON.stringify([r, r2]),
       };
     },
@@ -51,7 +37,7 @@ export const cases = [
       const r = await c.js(
         `return {active: T.active(), file: app.workspace.getActiveFile()?.path, ed: app.workspace.activeEditor?.file?.path}`,
       );
-      return { ok: r.active.startsWith("card:Writing hides attention@1") && r.ed === B, note: JSON.stringify(r) };
+      return { ok: r.active.startsWith(`card:${tB}@1`) && r.ed === B, note: JSON.stringify(r) };
     },
   },
   {
@@ -59,6 +45,7 @@ export const cases = [
     run: async c => {
       await openIn(c, A, 0);
       await openIn(c, B, 1);
+      const other0 = await c.js(`return ${item(0, 0)}.leaf.view.editor.getValue()`);
       await clickLine(c, item(1, 0), 1);
       await c.key("Home");
       await c.key("p", { ctrl: true });
@@ -68,11 +55,15 @@ export const cases = [
       await c.key("Enter");
       await c.sleep(500);
       const r = await c.js(
-        `const e=${item(1, 0)}.leaf.view.editor; return {line: e.getLine(e.getCursor().line).slice(0,20), other: ${item(0, 0)}.leaf.view.editor.getValue().includes("- [ ] Really")}`,
+        `const e=${item(1, 0)}.leaf.view.editor; return {line: e.getLine(e.getCursor().line).slice(0,20), other: ${item(0, 0)}.leaf.view.editor.getValue()}`,
       );
       await c.key("z", { ctrl: true });
       await c.sleep(300);
-      return { ok: /^- \[ \]/.test(r.line) && !r.other, note: JSON.stringify(r) };
+      // the other card's note is unchanged
+      return {
+        ok: /^- \[ \]/.test(r.line) && r.other === other0,
+        note: JSON.stringify({ line: r.line, otherSame: r.other === other0 }),
+      };
     },
   },
   {
@@ -82,7 +73,7 @@ export const cases = [
       await clickLine(c, item(0, 0), 2);
       await c.key("f", { ctrl: true });
       await c.sleep(300);
-      await c.type("Escape");
+      await c.type(LONG_WORDS.searchWord);
       await c.sleep(400);
       const m = () =>
         c.js(
@@ -113,9 +104,7 @@ export const cases = [
   {
     id: "NE-05",
     run: async c => {
-      await c.js(
-        `for (const p of ["_test/EL r1.md","_test/EL r2.md"]) { if(T.f(p)) await app.vault.modify(T.f(p),"foo bar foo"); else await app.vault.create(p,"foo bar foo"); } return 1`,
-      );
+      await c.js(`for (const p of ["_test/EL r1.md","_test/EL r2.md"]) await T.note(p,"foo bar foo"); return 1`);
       await openIn(c, "_test/EL r1.md", 0);
       await openIn(c, "_test/EL r2.md", 1);
       await clickLine(c, item(0, 0), 0);
@@ -143,7 +132,7 @@ export const cases = [
     id: "NE-06",
     run: async c => {
       await c.js(
-        `for (const p of ["_test/EL r1.md","_test/EL r2.md"]) await app.vault.modify(T.f(p),"foo bar foo\\n\\nfoo again"); return 1`,
+        `for (const p of ["_test/EL r1.md","_test/EL r2.md"]) await T.note(p,"foo bar foo\\n\\nfoo again"); return 1`,
       );
       await openIn(c, "_test/EL r1.md", 0);
       await openIn(c, "_test/EL r2.md", 1);
@@ -191,7 +180,7 @@ export const cases = [
       await c.clickEl(`${item(0, 0)}.el.querySelector(".markdown-preview-view p, .markdown-preview-view li")`);
       await c.key("f", { ctrl: true });
       await c.sleep(300);
-      await c.type("Escape");
+      await c.type(LONG_WORDS.searchWord);
       await c.sleep(500);
       const ys = [];
       for (let i = 0; i < 3; i++) {
@@ -214,18 +203,14 @@ export const cases = [
   {
     id: "NE-08",
     run: async c => {
+      const target = LONG_WORDS.linkHeading;
       await c.js(
-        `if(!T.f("_test/EL headlink.md")) await app.vault.create("_test/EL headlink.md","[[Outline mode#Vim mode]]"); else await app.vault.modify(T.f("_test/EL headlink.md"), "[[Outline mode#Vim mode]]"); return 1`,
-      );
-      const h = await c.js(
-        `return (app.metadataCache.getFileCache(T.f(${JSON.stringify(LONG)})).headings||[]).map(h=>h.heading)`,
-      );
-      const target = "C4. Folded item above";
-      await c.js(
-        `await app.vault.modify(T.f("_test/EL headlink.md"), "intro\\n\\n[[_test/Outline mode#${target}]]"); return 1`,
+        `await T.note("_test/EL headlink.md", ${JSON.stringify(`intro
+
+[[${NOTES.LONG.title}#${target}]]`)}); await T.sleep(300); return 1`,
       );
       await openIn(c, "_test/EL headlink.md", 0);
-      await clickLinkIn(c, "_test/EL headlink.md", /Outline|Folded/);
+      await clickLinkIn(c, "_test/EL headlink.md", target);
       await c.sleep(800);
       const r = await c.js(
         `const l=T.tab().lanes[1]; const it=l.items[0]; if(!it) return {lanes: T.lanes()}; const L=l.listEl.getBoundingClientRect(); const hEl=[...it.el.querySelectorAll(".cm-line, h1,h2,h3,h4")].find(e=>e.textContent.includes(${JSON.stringify(target)})); return {lane1: it?.file.path, y: hEl ? Math.round(hEl.getBoundingClientRect().top - L.top) : null, scroll: l.listEl.scrollTop}`,

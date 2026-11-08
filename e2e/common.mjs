@@ -1,7 +1,16 @@
-export const A = "z/Writing replaces caching.md",
-  B = "z/Writing hides attention.md",
-  C = "z/Writing delays interfaces.md",
-  D = "z/Vocabulary predicts money.md";
+// Shared bits of the e2e cases: the fixture notes (fixtures.mjs) and input helpers.
+import { NOTES } from "./fixtures.mjs";
+export { DIR, FILES, LONG, MANY, NOTES, PEOPLE, SEARCH_WORD, TEMPLATES } from "./fixtures.mjs";
+
+/** The four notes most cases open: their paths, and their titles (what T.lanes() shows). */
+export const A = NOTES.A.path,
+  B = NOTES.B.path,
+  C = NOTES.C.path,
+  D = NOTES.D.path;
+export const tA = NOTES.A.title,
+  tB = NOTES.B.title,
+  tC = NOTES.C.title,
+  tD = NOTES.D.title;
 export const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
 export async function openIn(c, path, lane = 0, extra = "") {
   return c.js(
@@ -14,10 +23,10 @@ export async function explorerClick(c, path, mods = 0, button = "left") {
   );
   await c.clickEl(`document.querySelector('.nav-file-title[data-path="${path}"]')`, { mods, button, wait: 900 });
 }
-// a link inside a card: the first rendered link (LP or reading) whose text matches re
-export async function clickLinkIn(c, cardFile, re, mods = 0, button = "left") {
+// a link inside a card: the first rendered link (Live Preview or Reading view) whose text contains `text`
+export async function clickLinkIn(c, cardFile, text, mods = 0, button = "left") {
   return c.clickEl(
-    `(()=>{const it=T.tab().lanes.flatMap(l=>l.items).find(i=>i.file.path===${JSON.stringify(cardFile)}); const e=[...it.el.querySelectorAll(".cm-content .cm-underline, .markdown-preview-view a.internal-link")].find(e=>${re}.test(e.textContent)); const r=e.getBoundingClientRect(); const L=e.closest(".lane-list").getBoundingClientRect(); if(r.top<L.top+60||r.bottom>L.bottom-10) e.scrollIntoView({block:"center"}); return e})()`,
+    `(()=>{const it=T.tab().lanes.flatMap(l=>l.items).find(i=>i.file.path===${JSON.stringify(cardFile)}); const e=[...it.el.querySelectorAll(".cm-content .cm-underline, .markdown-preview-view a.internal-link")].find(e=>e.textContent.includes(${JSON.stringify(text)})); const r=e.getBoundingClientRect(); const L=e.closest(".lane-list").getBoundingClientRect(); if(r.top<L.top+60||r.bottom>L.bottom-10) e.scrollIntoView({block:"center"}); return e})()`,
     { mods, button, wait: 1000 },
   );
 }

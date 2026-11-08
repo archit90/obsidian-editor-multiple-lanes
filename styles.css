@@ -1,4 +1,4 @@
-/* Editor Lanes. A lanes tab (.lanes-view) lays out its lanes itself: .lanes-grid holds columns (.lanes-col,
+/* Editor Multiple Lanes. A lanes tab (.lanes-view) lays out its lanes itself: .lanes-grid holds columns (.lanes-col,
    flex-grow = width share) of stacked lanes (.lane, flex-grow = row share), with .lanes-divider between them.
    Each lane scrolls; each hosted editor grows to its content instead of scrolling itself. */
 .lanes-view {
@@ -230,7 +230,8 @@
 }
 /* Obsidian sets an inline `padding-bottom` of half the editor's height on .cm-content (Reading view: on
    .markdown-preview-sizer) so a note can scroll past its end. With the editor as tall as its content, that
-   pads the gap before the backlinks panes; inline styles lose to !important. */
+   would leave a gap at the end of every card (and above whatever another plugin shows under the note, such as
+   Backlinks Full View, which keeps a host's own padding); inline styles lose to !important. */
 .lane-item-body .cm-content {
   padding-bottom: 0 !important;
 }
@@ -300,8 +301,6 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   margin-left: auto;
 }
 
-/* Pin: always shown (muted; accent colour when the note is pinned). A pinned note can't be closed
-   from its header, so its × is hidden. */
 /* Per-note view mode (Reading view ↔ editing), like the book / pencil button in a tab's header. Always shown. */
 .lane-mode {
   margin-left: auto;
@@ -324,6 +323,8 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   min-width: 40px;
   min-height: 40px;
 }
+/* Pin: always shown (muted; accent colour when the note is pinned). A pinned note can't be closed
+   from its header, so its × is hidden. */
 .lane-pin {
   flex: none;
   padding: 2px 4px;
@@ -341,7 +342,6 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   color: var(--text-normal, inherit);
 }
 .lane-item.is-pinned .lane-pin {
-  opacity: 1;
   color: var(--interactive-accent, #7b6cd9);
 }
 .lane-item.is-pinned .lane-close {
@@ -396,10 +396,9 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
   overflow-y: auto;
 }
 
-/* Backlinks panes off: hide Backlinks Full View's panes in lanes (BFV also skips these views; this covers an
-   older BFV that doesn't check data-bfv-skip). */
-.lanes-view[data-bfv-skip] .bfv-container {
-  display: none !important;
+/* A lanes tab while this Obsidian can't host notes in lanes (UnsupportedLanesView) */
+.lanes-unsupported {
+  padding: var(--size-4-4, 16px);
 }
 
 /* Settings tab */
