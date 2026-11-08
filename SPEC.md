@@ -139,7 +139,9 @@ editable notes ("cards").
 - **Tablets** show the desktop layout; dividers are touch-draggable.
 - **Phones** show one lane at a time: the lanes (in layout order) sit in a horizontal snap-scrolling row,
   with a row of dots and note counts above to switch. The lane swiped to is the current lane, and opening a
-  note in a lane switches to it. Swiping past the first or last lane opens Obsidian's drawers.
+  note in a lane switches to it. A switch (a dot, a note opened in a lane) jumps there at once, not with a smooth
+  scroll: the editor scrolling its cursor into view would cut the animation short and the snap would land on the
+  lane before. Swiping past the first or last lane opens Obsidian's drawers.
 - **Touch:** long-press a card header for its menu, or long-press and move to drag it; long-press a lane's
   background for the lane menu; the file menu's "Open in editor lane" / "Open in new lanes tab" replace
   Shift-click. Hit areas are 40–44 px and the pin is always shown.
@@ -216,7 +218,11 @@ other plugin.
 - **Card leaves** are ordinary markdown leaves: in `iterateAllLeaves` / `getLeavesOfType("markdown")`, inside the
   lanes tab's `.lanes-view` (and `.workspace-leaf-content[data-type="editor-lanes"]`); a view state set on them
   directly is picked up (mode button, saved mode). New notes from Templater or Editor Defaults (opened with
-  `eState.rename`) go to the last-used lane, and the new card is the active editor at once.
+  `eState.rename`) go to the last-used lane, and the new card is the active editor at once. A caller that opens a
+  note into a leaf and then sets that leaf's ephemeral state (Templater's "Create new note from template":
+  `openFile`, then `setEphemeralState({rename: "all"})`) has it applied to the card the note went to, within 2 s:
+  the card's title is selected to name it. Applied to the leaf it would act on the note still shown there (a rename
+  prompt for the note you were in).
 - **Test API for other plugins' test suites** (nothing else): the plugin instance's `settings.lanesOnly`,
   `settings.showBacklinks`, `settings.routeExceptions`, then `settingsChanged("routing")` /
   `settingsChanged("backlinks")` (not just `saveSettings`, which leaves `data-bfv-skip` stale); the view type
@@ -248,11 +254,14 @@ other plugin.
   lost and the debouncer never runs again. Seen 2026-11-08: Backlinks Full View built no panes until a restart.
 - **Internals:** every Obsidian internal used was checked against Obsidian 1.15.0's `app.js` and `app.css`.
   `minAppVersion` is 1.15.0. A new Obsidian version means re-checking them.
-- **Versions and releases:** `npm version patch|minor|major` bumps `package.json`, then `scripts/version-bump.mjs`
-  copies the version into `manifest.json` and `versions.json`; npm commits and tags it (tag = the version, no
-  `v`, `.npmrc`). `git push --follow-tags` runs `.github/workflows/release.yml`: `npm run check`, a check that the
-  tag is the manifest version, then a GitHub release with `main.js`, `manifest.json` and `styles.css`, which BRAT
-  installs. `isDesktopOnly` is false.
+- **Versions and releases:** the version is 0.1.1, and releases bump the patch version only (0.1.1 → 0.1.2 …);
+  the minor and major stay. `npm run release` (= `npm version patch`) bumps `package.json`, then
+  `scripts/version-bump.mjs` copies the version into `manifest.json` and `versions.json`; npm commits and tags it
+  (tag = the version, no `v`, `.npmrc`). `scripts/version-bump.mjs` refuses a new minor or major version (and puts
+  `package.json` back) unless it's asked for with `ALLOW_MINOR_BUMP=1 npm version minor|major`. `git push
+--follow-tags` runs `.github/workflows/release.yml`: `npm run check`, a check that the tag is the manifest
+  version, then a GitHub release with `main.js`, `manifest.json` and `styles.css`, which BRAT installs.
+  `isDesktopOnly` is false.
 - **Trying a build in a vault:** `npm run deploy -- <vault> …` (or `OBSIDIAN_VAULTS`) builds and copies `main.js`,
   `manifest.json` and `styles.css` into each vault that already has the plugin (`--install` adds it); `data.json`
   is never touched. Reload the plugin in Obsidian afterwards.
@@ -277,8 +286,8 @@ other plugin.
   own.
 - **Checked in a test Obsidian** (1.15.0 sandbox, real input over CDP; `TEST-CASES.md`, scripts in `e2e/`):
   2026-11-08, alone in a fresh empty vault (every group, mobile emulation on tablet and
-  phone, and an Obsidian restart): 139 cases, 131 pass, 1 fails (MO-02: a phone's lane switching scrolls one step
-  late, open), 7 skipped (they need another plugin). Together with Backlinks Full View, Editor Outliner, Templater
-  and Calendar: the contract cases and the cases that need them pass, except the two that need Backlinks Full
-  View's panes (that build showed none). Details: `TEST-CASES.md`, Runs.
+  phone, and an Obsidian restart): 139 cases, 132 pass, 7 skipped (they need another plugin); MO-02 (a phone's
+  lane switching landed one lane late) was fixed after that run and the mobile groups rerun clean. Together with
+  Backlinks Full View, Editor Outliner, Templater and Calendar: the contract cases and every case that needs them
+  pass (CO-04 and NE-20 after Backlinks Full View's debounce fix). Details: `TEST-CASES.md`, Runs.
 - **Everything else** is built and unit-tested (`npm run check`), not confirmed by the user in Obsidian.

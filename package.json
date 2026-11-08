@@ -1,6 +1,6 @@
 {
   "name": "obsidian-editor-multiple-lanes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Logseq-style editor lanes: tabs holding side-by-side columns of scrollable, fully editable notes, laid out from a definition in settings or per tab.",
   "license": "MIT",
   "author": "Archit Gupta",
@@ -26,6 +26,7 @@
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run smoke",
     "deploy": "npm run build && node scripts/deploy.mjs",
     "version": "node scripts/version-bump.mjs && git add manifest.json versions.json",
+    "release": "npm version patch",
     "e2e": "node e2e/run.mjs",
     "e2e:all": "node e2e/run.mjs all",
     "e2e:restart": "node e2e/restart.mjs",

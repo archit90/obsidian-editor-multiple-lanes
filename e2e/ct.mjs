@@ -234,6 +234,36 @@ export const cases = [
     },
   },
   {
+    id: "NN-02",
+    run: async c => {
+      // Templater's "Create new note from template" opens the note into the leaf it picked and only then calls
+      // setEphemeralState({rename: "all"}) on that leaf. With the open routed to a card, the rename belongs to the
+      // card (its title, selected), never to the note still shown in that leaf (no rename prompt for it)
+      const r =
+        await c.js(`const P=T.P(), keep=P.settings.routeExceptions, tp="_test/EL nn tab.md", np="_test/EL nn2.md";
+        try {
+          for (const p of [tp, np]) if (T.f(p)) await app.vault.delete(T.f(p));
+          P.settings.routeExceptions = tp; await P.settingsChanged("routing");
+          const t=await app.vault.create(tp,"tab"), n=await app.vault.create(np,"new");
+          const leaf=app.workspace.getLeaf("tab"); await leaf.openFile(t); await T.sleep(300);
+          await leaf.openFile(n, {state:{mode:"source"}}); leaf.setEphemeralState({rename:"all"}); await T.sleep(600);
+          const it=T.tab().lanes.flatMap(l=>l.items).find(i=>i.file===n);
+          const r={inCard: !!it, tabShows: leaf.view.file?.path, prompts: document.querySelectorAll(".modal-container").length, titleFocused: !!it && document.activeElement===it.titleEl, sel: document.getSelection().toString()};
+          document.querySelectorAll(".modal-container .mod-cancel, .modal-container .modal-close-button").forEach(b=>b.click());
+          for (const l of T.tab().lanes) for (const x of [...l.items]) if (x.file===n) l.close(x);
+          leaf.detach();
+          return r;
+        } finally {
+          for (const p of [tp, np]) if (T.f(p)) await app.vault.delete(T.f(p));
+          P.settings.routeExceptions = keep; await P.settingsChanged("routing");
+        }`);
+      return {
+        ok: r.inCard && r.tabShows === "_test/EL nn tab.md" && r.prompts === 0 && r.titleFocused && r.sel === "EL nn2",
+        note: JSON.stringify(r),
+      };
+    },
+  },
+  {
     id: "PB-01",
     run: async c => {
       // the Obsidian internals check at load: with a workspace method Lanes needs missing, the plugin patches nothing,

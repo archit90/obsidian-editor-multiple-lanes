@@ -167,6 +167,9 @@ const loose = (o: object) => o as unknown as Record<string, AnyFn>;
  * left sidebar if they're missing.
  */
 
+/** How long after a rerouted open an eState sent to the original leaf still means the note opened (ms). */
+const REROUTE_ESTATE_MS = 2000;
+
 export default class EditorLanesPlugin extends Plugin {
   override settings: Settings = { ...DEFAULTS };
   /** "Exceptions to lanes only", compiled from the setting. */
@@ -389,9 +392,13 @@ export default class EditorLanesPlugin extends Plugin {
         const tab = this.tabOf(leaf);
         if (tab) this.touchTab(tab);
         this.activeCardFor(leaf);
-        // phones: a card that becomes active (a command, a jump) is scrolled into view with its lane
+        // phones: a card that becomes active (a command, a jump) is scrolled into view with its lane. Not when the
+        // lanes tab only hands the active editor back to its last card (activeCardFor, after a tap on the lane
+        // switcher or a swipe made the tab itself active): that would undo the lane switch just made.
         const host = leaf ? this.hostedLeaves.get(leaf) : undefined;
-        if (host) host.lane.tab.showLane(host.lane);
+        const handedOff = leaf !== null && leaf === this.handingOff;
+        if (handedOff) this.handingOff = null;
+        if (host && !handedOff) host.lane.tab.showLane(host.lane);
       }),
     );
 
@@ -830,6 +837,21 @@ export default class EditorLanesPlugin extends Plugin {
               return next.call(this, file, openState);
             }
           },
+        // A caller that opened a note into this leaf and then sets its ephemeral state (Templater's "Create new note
+        // from template": openFile, then setEphemeralState({rename: "all"})) means the note it opened, which went
+        // to a card: that card gets it. Applied here it would act on the note still shown in this leaf (a rename
+        // prompt for the note you were in).
+        setEphemeralState: next =>
+          function (this: WorkspaceLeaf, state: unknown) {
+            const r = plugin.rerouted.get(this);
+            const shown = this.view instanceof FileView ? this.view.file : null;
+            if (r && Date.now() - r.at < REROUTE_ESTATE_MS && shown !== r.file) {
+              plugin.rerouted.delete(this);
+              if (plugin.hostedLeaves.has(r.card)) r.card.setEphemeralState(state);
+              return;
+            }
+            return next.call(this, state);
+          },
       }),
     );
   }
@@ -1211,6 +1233,10 @@ export default class EditorLanesPlugin extends Plugin {
 
   /** Per lanes tab: its card that was active last. */
   private lastCard = new WeakMap<LanesView, WorkspaceLeaf>();
+  /** A leaf whose open just went to a card instead: that card, for an eState sent to the leaf right after. */
+  private rerouted = new WeakMap<WorkspaceLeaf, { file: TFile; card: WorkspaceLeaf; at: number }>();
+  /** The card a lanes tab is handing the active editor to (activeCardFor), while that runs. */
+  private handingOff: WorkspaceLeaf | null = null;
 
   /**
    * A lanes tab that becomes the active leaf hands that on to its last active card (else its first open one), so
@@ -1231,8 +1257,14 @@ export default class EditorLanesPlugin extends Plugin {
     if (!card) return;
     // after Obsidian's own active-leaf handling for this change has run
     activeWindow.setTimeout(() => {
-      if (this.app.workspace.activeLeaf === leaf && this.hostedLeaves.has(card))
-        this.app.workspace.setActiveLeaf(card, { focus: false });
+      if (this.app.workspace.activeLeaf !== leaf || !this.hostedLeaves.has(card)) return;
+      // Obsidian fires active-leaf-change a moment after setActiveLeaf (it batches them): the handler clears the
+      // mark when that event comes; if it never does (the card was active already), the timer clears it
+      this.handingOff = card;
+      this.app.workspace.setActiveLeaf(card, { focus: false });
+      window.setTimeout(() => {
+        if (this.handingOff === card) this.handingOff = null;
+      }, 500);
     }, 0);
   }
 
@@ -1393,6 +1425,10 @@ export default class EditorLanesPlugin extends Plugin {
     this.routing.add(leaf);
     try {
       await this.routeInner(leaf, file, openState, intent);
+      // the card that got the note, for an eState its caller sends to `leaf` next (patchOpenFile)
+      let card: WorkspaceLeaf | null = null;
+      for (const [l, h] of this.hostedLeaves) if (h.item.file === file) card = l;
+      if (card && card !== leaf) this.rerouted.set(leaf, { file, card, at: Date.now() });
     } finally {
       this.routing.delete(leaf);
     }

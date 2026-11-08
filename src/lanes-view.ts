@@ -141,7 +141,7 @@ export class LanesView extends ItemView {
   override onResize() {
     for (const l of this.lanes) l.checkWindow(); // a tab moved to another window
     // phones: keep the shown lane in place (rotation, the keyboard, a window that became phone-sized)
-    if (this.isPhone()) this.showLane(this.shownLane ?? this.currentLane(), false);
+    if (this.isPhone()) this.showLane(this.shownLane ?? this.currentLane());
   }
 
   // ---------- phones: one lane at a time ----------
@@ -151,15 +151,19 @@ export class LanesView extends ItemView {
     return !!this.contentEl?.doc.body.hasClass("is-phone");
   }
 
-  /** Phones: scroll `lane` into view (a note opened or moved there, a lane button). Elsewhere nothing to do. */
-  showLane(lane: Lane | null, smooth = true) {
+  /**
+   * Phones: scroll `lane` into view (a note opened or moved there, a lane button). Elsewhere nothing to do.
+   * It jumps there at once, never smoothly: CodeMirror scrolls every scrolling ancestor to show a caret (this
+   * grid too), so the note just opened would apply its pending scroll-into-view as soon as its card came into
+   * sight, a few pixels into the animation. That cuts the smooth scroll short, and the snap then lands on the
+   * lane before (seen 2026-11-08, MO-02). With the lane already in view, that scroll does nothing.
+   */
+  showLane(lane: Lane | null) {
     if (!lane || !this.gridEl || !this.isPhone() || !this.lanes.includes(lane)) return;
     this.shownLane = lane;
     this.updateSwitcher();
     const left = lane.el.offsetLeft; // .lanes-grid is the offset parent
-    if (Math.abs(this.gridEl.scrollLeft - left) > 1) {
-      this.gridEl.scrollTo({ left, behavior: smooth ? "smooth" : "auto" });
-    }
+    if (Math.abs(this.gridEl.scrollLeft - left) > 1) this.gridEl.scrollTo({ left, behavior: "auto" });
   }
 
   /** Phones: the lane a swipe (or a scroll) settled on. */
@@ -286,7 +290,7 @@ export class LanesView extends ItemView {
     if (this.shownLane && !this.lanes.includes(this.shownLane)) this.shownLane = null;
     this.updateSwitcher();
     // phones: the redrawn grid starts scrolled to the left; go back to the lane shown before
-    if (this.isPhone() && this.shownLane) this.showLane(this.shownLane, false);
+    if (this.isPhone() && this.shownLane) this.showLane(this.shownLane);
   }
 
   /** A divider between two columns (`kind` "col") or two lanes stacked in column `ci` ("row"). Always draggable: sizes are the one thing that changes. */

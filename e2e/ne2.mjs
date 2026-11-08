@@ -114,13 +114,13 @@ export const cases = [
       await c.sleep(1500);
       const q = sel => `!!${item(0, 0)}.el.querySelector(${JSON.stringify(sel)})`;
       const lp = await c.js(
-        `return {callout: ${q(".cm-callout, .callout")}, table: ${q("table")}, code: ${q(".cm-line .cm-hmd-codeblock, .HyperMD-codeblock")}, math: ${q(".math, mjx-container")}, mermaid: ${q(".mermaid svg, .block-language-mermaid svg")}, embed: ${q(".internal-embed .markdown-embed-content, .markdown-embed")}, img: ${q(".internal-embed img, img")}, fold: ${q(".cm-fold-indicator")}}`,
+        `return {callout: ${q(".cm-callout, .callout")}, table: ${q("table")}, code: ${q(".cm-line .cm-hmd-codeblock, .HyperMD-codeblock")}, math: ${q(".math, mjx-container")}, mermaid: ${q(".mermaid svg, .block-language-mermaid svg")}, embed: ${q(".internal-embed .markdown-embed-content, .markdown-embed, .bfv-note-embed")}, img: ${q(".internal-embed img, img")}, fold: ${q(".cm-fold-indicator")}}`,
       );
       await c.js(
         `const l=T.tab().lanes[0]; await l.setView(l.items[0],{mode:"preview"}); await T.sleep(1500); return 1`,
       );
       const rd = await c.js(
-        `return {callout: ${q(".callout")}, table: ${q("table")}, code: ${q("pre code")}, math: ${q("mjx-container, .math")}, mermaid: ${q(".mermaid svg")}, embed: ${q(".markdown-embed")}, img: ${q("img")}}`,
+        `return {callout: ${q(".callout")}, table: ${q("table")}, code: ${q("pre code")}, math: ${q("mjx-container, .math")}, mermaid: ${q(".mermaid svg")}, embed: ${q(".markdown-embed, .bfv-note-embed")}, img: ${q("img")}}`,
       );
       c.shot("NE-12");
       return {
@@ -257,7 +257,7 @@ export const cases = [
       await openIn(c, A, 0);
       await openIn(c, B, 1);
       await c.js(
-        `for (const t of ["outgoing-link","outline"]) { const l=app.workspace.getLeavesOfType(t)[0]; if (l) await app.workspace.revealLeaf(l); } await T.sleep(400); return 1`,
+        `for (const t of ["outgoing-link","outline","backlink"]) { const l=app.workspace.getLeavesOfType(t)[0]; if (l) await app.workspace.revealLeaf(l); } await T.sleep(400); return 1`,
       );
       await clickLine(c, item(1, 0), 1);
       await c.sleep(500);
