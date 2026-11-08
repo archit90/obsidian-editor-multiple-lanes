@@ -19,12 +19,12 @@ scrollable, fully editable notes ("cards"), so you can work on many notes in one
 ## Install with BRAT
 
 1. Install **BRAT** (Obsidian42 - BRAT) from Community plugins.
-2. BRAT → **Add beta plugin** → `{{REPO}}` → Add plugin.
+2. BRAT → **Add beta plugin** → `archit90/obsidian-editor-multiple-lanes` → Add plugin.
 3. Enable **Editor Multiple Lanes** in Community plugins.
 
 ## Notes
 
-Works on its own. With the optional [Backlinks Full View](https://github.com/{{OWNER}}/obsidian-backlinks-full-view)
+Works on its own. With the optional [Backlinks Full View](https://github.com/archit90/obsidian-backlinks-full-view)
 plugin, cards show its backlinks panes under each note (setting: Show backlinks panes under lane notes).
 
 Requires Obsidian 1.15 or later. Lanes depend on Obsidian internals that aren't public API (checked against
@@ -34,9 +34,16 @@ Requires Obsidian 1.15 or later. Lanes depend on Obsidian internals that aren't 
 
 ```sh
 npm install
-npm run build   # main.js
-npm test        # unit tests
+npm run build                    # main.js
+npm test                         # unit tests
+npm run check                    # format, lint, typecheck, unit tests, build, smoke load: before every commit
+npm run deploy -- <vault> …      # build and copy into vaults that have the plugin installed (--install adds it)
 ```
+
+Releasing: `npm version patch` (or `minor` / `major`) bumps `package.json`, `manifest.json` and `versions.json` and
+tags the commit with the version; `git push --follow-tags` then runs the release workflow, which checks, builds and
+publishes the GitHub release BRAT installs from. End-to-end tests: see `TEST-CASES.md` and `SPEC.md`
+(Development).
 
 ## Licence
 
