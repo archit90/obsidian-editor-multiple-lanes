@@ -608,8 +608,8 @@ export default class EditorLanesPlugin extends Plugin {
     }
     new Notice(
       replaced
-        ? "Editor Lanes now keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened."
-        : "Editor Lanes now keeps all lanes in one tab: the old lanes were closed.",
+        ? "Editor Multiple Lanes now keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened."
+        : "Editor Multiple Lanes now keeps all lanes in one tab: the old lanes were closed.",
     );
   }
 

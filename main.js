@@ -2576,7 +2576,7 @@ var LanesSettingTab = class extends import_obsidian7.PluginSettingTab {
       el,
       "showBacklinks",
       "Show backlinks panes under lane notes",
-      "Off hides Backlinks Full View's panes in lanes, and that plugin skips the work for them.",
+      "Only matters with the Backlinks Full View plugin (optional): off hides its panes in lanes, and it skips the work for them.",
       "backlinks"
     );
     this.number(
@@ -3050,7 +3050,7 @@ var EditorLanesPlugin = class extends import_obsidian8.Plugin {
       for (const leaf of rest) this.detachQuietly(leaf);
     }
     new import_obsidian8.Notice(
-      replaced ? "Editor Lanes now keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened." : "Editor Lanes now keeps all lanes in one tab: the old lanes were closed."
+      replaced ? "Editor Multiple Lanes now keeps all lanes in one tab: the old lanes were closed and a new lanes tab opened." : "Editor Multiple Lanes now keeps all lanes in one tab: the old lanes were closed."
     );
   }
   /**

@@ -1,11 +1,11 @@
 JSON.stringify({
   active: (() => {
     const l = app.workspace.activeLeaf;
-    const p = app.plugins.plugins["obsidian-editor-lanes"];
+    const p = app.plugins.plugins["editor-multiple-lanes"];
     const h = p.hostedLeaves.get(l);
     return h ? "card:" + h.item.file.path + "@lane" + h.lane.tab.lanes.indexOf(h.lane) : l?.view?.getViewType();
   })(),
-  tabs: app.plugins.plugins["obsidian-editor-lanes"].allTabs().map(t => ({
+  tabs: app.plugins.plugins["editor-multiple-lanes"].allTabs().map(t => ({
     name: t.tabName(),
     lanes: t.lanes.map(l =>
       l.items.map(i => (i.pinned ? "P:" : "") + (i.collapsed ? "C:" : "") + i.file.basename + (i.leaf ? "" : "(u)")),

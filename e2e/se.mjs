@@ -120,7 +120,7 @@ export const cases = [
     id: "SE-06",
     run: async c => {
       const r = await c.js(
-        `const P=T.P(); const keep=await P.loadData(); await P.saveData({...keep, lanesOnly:"yes", maxNotesPerLane: 9999, linkTarget: "nowhere", preloadDistance: "200", bogus: 1, layout: "70, 30"}); await app.plugins.disablePlugin("obsidian-editor-lanes"); await app.plugins.enablePlugin("obsidian-editor-lanes"); await T.sleep(1500); const s=T.P().settings; const out={lanesOnly:s.lanesOnly, max:s.maxNotesPerLane, lt:s.linkTarget, pre:s.preloadDistance, bogus: "bogus" in s, def: s.defaultLayout}; await T.P().saveData(keep); T.P().settings=Object.assign(T.P().settings, keep); return out`,
+        `const P=T.P(); const keep=await P.loadData(); await P.saveData({...keep, lanesOnly:"yes", maxNotesPerLane: 9999, linkTarget: "nowhere", preloadDistance: "200", bogus: 1, layout: "70, 30"}); await app.plugins.disablePlugin("editor-multiple-lanes"); await app.plugins.enablePlugin("editor-multiple-lanes"); await T.sleep(1500); const s=T.P().settings; const out={lanesOnly:s.lanesOnly, max:s.maxNotesPerLane, lt:s.linkTarget, pre:s.preloadDistance, bogus: "bogus" in s, def: s.defaultLayout}; await T.P().saveData(keep); T.P().settings=Object.assign(T.P().settings, keep); return out`,
       );
       return {
         ok:

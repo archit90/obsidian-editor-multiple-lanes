@@ -1,6 +1,6 @@
 (() => {
   const T = (window.T = {});
-  T.P = () => app.plugins.plugins["obsidian-editor-lanes"];
+  T.P = () => app.plugins.plugins["editor-multiple-lanes"];
   T.f = p => app.vault.getFileByPath(p);
   T.sleep = ms => new Promise(r => setTimeout(r, ms));
   T.tabs = () => T.P().allTabs();

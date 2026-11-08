@@ -52,7 +52,7 @@ export const cases = [
       await c.js(`T.tab().lanes[1].togglePin(T.tab().lanes[1].items[0]); return 1`);
       const before = await c.js(`return JSON.stringify(T.tab().getState())`);
       const r = await c.js(
-        `const domBefore=document.querySelectorAll(".lane-split").length; await app.plugins.disablePlugin("obsidian-editor-lanes"); await T.sleep(800); const off={splits: document.querySelectorAll(".lane-split").length, lanesDom: document.querySelectorAll(".lane").length, patched: app.workspace.iterateLeaves.toString().includes("splits"), md: app.workspace.getLeavesOfType("markdown").length}; await app.plugins.enablePlugin("obsidian-editor-lanes"); await T.sleep(2000); return {domBefore, off, after: JSON.stringify(T.tab().getState())}`,
+        `const domBefore=document.querySelectorAll(".lane-split").length; await app.plugins.disablePlugin("editor-multiple-lanes"); await T.sleep(800); const off={splits: document.querySelectorAll(".lane-split").length, lanesDom: document.querySelectorAll(".lane").length, patched: app.workspace.iterateLeaves.toString().includes("splits"), md: app.workspace.getLeavesOfType("markdown").length}; await app.plugins.enablePlugin("editor-multiple-lanes"); await T.sleep(2000); return {domBefore, off, after: JSON.stringify(T.tab().getState())}`,
       );
       const strip = s => JSON.stringify(JSON.parse(s).lanes.map(l => l.map(d => d.path + d.pinned)));
       return {
@@ -69,6 +69,7 @@ export const cases = [
   },
   {
     id: "CO-04",
+    needs: "backlinks-full-view",
     run: async c => {
       await openIn(c, A, 0);
       await c.sleep(1500);

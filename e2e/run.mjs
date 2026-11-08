@@ -12,8 +12,15 @@ c.prep = async () => {
 await c.prep();
 const resFile = "results.json";
 const res = fs.existsSync(resFile) ? JSON.parse(fs.readFileSync(resFile, "utf8")) : {};
+// a case that tests working with another plugin says so (`needs: "<plugin id>"`), and is skipped without it:
+// Editor Lanes itself works without any of them
+const loaded = new Set(await c.js("return Object.keys(app.plugins.plugins)"));
 for (const cs of mod.cases) {
   if (filt && !filt.test(cs.id)) continue;
+  if (cs.needs && !loaded.has(cs.needs)) {
+    console.log(`SKIP ${cs.id} (${cs.needs} not enabled)`);
+    continue;
+  }
   let r;
   try {
     await c.unstick();

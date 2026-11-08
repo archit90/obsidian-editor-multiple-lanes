@@ -190,7 +190,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "showBacklinks",
       "Show backlinks panes under lane notes",
-      "Off hides Backlinks Full View's panes in lanes, and that plugin skips the work for them.",
+      "Only matters with the Backlinks Full View plugin (optional): off hides its panes in lanes, and it skips the work for them.",
       "backlinks",
     );
     this.number(

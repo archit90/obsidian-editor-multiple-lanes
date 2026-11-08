@@ -1,6 +1,6 @@
-# Editor Lanes: test catalogue
+# Editor Multiple Lanes: test catalogue
 
-Deep test cases for Editor Lanes in a real Obsidian 1.15.0 (an isolated sandbox copy of test vault 948, 20,000 notes;
+Deep test cases for Editor Multiple Lanes in a real Obsidian 1.15.0 (an isolated sandbox copy of test vault 948, 20,000 notes;
 Xvfb, own profile), driven over the DevTools protocol with real mouse, key, wheel and drag input where input
 matters (`Input.dispatchMouseEvent` / `dispatchKeyEvent`, HTML5 drags intercepted and replayed with
 `Input.dispatchDragEvent`), plus a second connection for popout windows and the Settings window.
@@ -10,6 +10,12 @@ pass; NE-21 and LT-12 needed test-script fixes (a hidden sidebar view; split com
 active) and were rerun on the same build; the mobile groups (MO, PK-06) ran with `app.emulateMobile(true)`
 (tablet, then phone at 421 px); LT-17 / CO-07 by a stop + start of Obsidian (`restart.sh`). Every case also
 fails on console errors and on detached card leaves left registered.
+
+**Without the other custom plugins (2026-11-08):** every group run with the other three disabled (saved, then a
+restart): all PASS except LT-12, which fails the same way with all plugins on (open: the card click after two
+splits seems to miss; Lanes' code changed only in text since it last passed). CO-04 and NE-20 test Backlinks Full View in cards (`needs:
+"backlinks-full-view"`) and are skipped without it; with it both PASS. Screenshots now use an absolute path
+(ImageMagick's policy refuses `../`); CD-18 opens the search view itself.
 
 Runner and cases: `e2e/` (start the sandbox with `tools/obs-sandbox.sh start 3`, then from `e2e/`:
 `node run.mjs <group>.mjs [id-regex]`; groups ro ro2 ro3 cd cd2 cd3 cd4 ne ne2 ne3 lt pw se cm co pk pf, mobile mo
@@ -180,7 +186,7 @@ their defaults, one lanes tab in the main window, left sidebar open; notes from 
 | CO-03 | Disable and re-enable the plugin                                                            | No leftover DOM / patches / leaves / console errors; lanes tabs come back from saved state | §3 Code layout (patches undone) | **FAIL → fixed** | {"domBefore":2,"off":{"splits":0,"lanesDom":0,"patched":false,"md":0},"after":"{\"name\":\"WS one\",\"lanes\":[[{\"path\":\"z/Writing replaces caching.md\",\"collapsed\":false,\"pinned\":false,\"openedAt\":1794047400807}],[{\"path\":\"z/Writing hides attent… |
 | CO-04 | Backlinks Full View: link clicks inside a BFV pane under a card                             | Open in lanes per routing                                                                  | Cards / BFV                     | **PASS**         | 0/2024-12-17-150455.md {"active":"card:2024-12-17-150455@1","lanes":[["Writing replaces caching"],["2024-12-17-150455"],[]],"roots":["editor-lanes:WS one"],"errs":[]}                                                                                             |
 | CO-05 | Canvas file cards / embedded notes / hover popover editors are not affected by card patches | Scroll/search behave normally there                                                        | common sense                    | **PASS**         | {"sc":4254.5673828125,"nonCardScroll":120.00566536486635,"cardScroll":null}                                                                                                                                                                                        |
-| CO-06 | Editor Defaults / Templater folder templates on a new note created from a lane              | Templates apply                                                                            | common sense                    | **PASS**         | covered by RO-20 (Ctrl+N new note named in the lane), RO-21 and NE-23 (Templater folder/zettel template applied from a card)                                                                                                                                       |
+| CO-06 | Editor Defaults (Archit) / Templater folder templates on a new note created from a lane     | Templates apply                                                                            | common sense                    | **PASS**         | covered by RO-20 (Ctrl+N new note named in the lane), RO-21 and NE-23 (Templater folder/zettel template applied from a card)                                                                                                                                       |
 
 ## PF: Performance and robustness
 

@@ -45,7 +45,7 @@ export const cases = [
       res.dropPoint = (await st(c)).lanes[1].join("|");
       // a search result
       await c.js(
-        `const s=app.workspace.getLeavesOfType("search")[0]; app.workspace.revealLeaf(s); s.view.setQuery("Writing beats memory"); await T.sleep(2500); return 1`,
+        `app.internalPlugins.getPluginById("global-search").instance.openGlobalSearch("Writing beats memory"); await T.sleep(2500); return 1`,
       );
       f = await c.at(
         `[...document.querySelectorAll(".workspace-leaf-content[data-type=search] .tree-item-self.search-result-file-title")][0]`,

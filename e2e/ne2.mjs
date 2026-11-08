@@ -210,6 +210,7 @@ export const cases = [
   },
   {
     id: "NE-20",
+    needs: "backlinks-full-view",
     run: async c => {
       await openIn(c, A, 0);
       await c.sleep(1500);

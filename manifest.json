@@ -1,6 +1,6 @@
 {
-  "id": "obsidian-editor-lanes",
-  "name": "Editor Lanes",
+  "id": "editor-multiple-lanes",
+  "name": "Editor Multiple Lanes",
   "version": "0.1.0",
   "minAppVersion": "1.15.0",
   "description": "Logseq-style editor lanes: tabs holding side-by-side columns of scrollable, fully editable notes, laid out from a definition in settings or per tab.",

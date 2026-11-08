@@ -27,7 +27,7 @@ export const cases = [
     run: async c => {
       await c.clickEl(`document.querySelector('.side-dock-ribbon-action[aria-label="New lanes tab"]')`, { wait: 800 });
       let s = await st(c);
-      await c.js(`app.commands.executeCommandById("obsidian-editor-lanes:new-lane"); await T.sleep(600); return 1`);
+      await c.js(`app.commands.executeCommandById("editor-multiple-lanes:new-lane"); await T.sleep(600); return 1`);
       const s2 = await st(c);
       const hint = await c.js(
         `return [...T.tab().contentEl.querySelectorAll(".lane-empty")].filter(e=>e.offsetHeight>0).length`,
@@ -55,7 +55,7 @@ export const cases = [
     id: "LT-03",
     run: async c => {
       const old = await c.js(`return T.tab().tabName()`);
-      await c.js(`app.commands.executeCommandById("obsidian-editor-lanes:rename-tab"); await T.sleep(400); return 1`);
+      await c.js(`app.commands.executeCommandById("editor-multiple-lanes:rename-tab"); await T.sleep(400); return 1`);
       await c.key("a", { ctrl: true });
       await c.type("  Foo   bar ");
       await c.sleep(200);
@@ -156,7 +156,7 @@ export const cases = [
       await c.key("Escape");
       await c.sleep(400);
       await c.js(
-        `app.commands.executeCommandById("obsidian-editor-lanes:change-layout"); await T.sleep(300); return 1`,
+        `app.commands.executeCommandById("editor-multiple-lanes:change-layout"); await T.sleep(300); return 1`,
       );
       opens.cmd = await c.js(`const m=!!document.querySelector(".modal .lane-layout-input"); return m`);
       await c.key("Escape");
@@ -342,7 +342,7 @@ export const cases = [
       const saved = await c.js(`return T.tab().getState().sizes`);
       // reload plugin: sizes back
       await c.js(
-        `await app.plugins.disablePlugin("obsidian-editor-lanes"); await app.plugins.enablePlugin("obsidian-editor-lanes"); await T.sleep(2000); return 1`,
+        `await app.plugins.disablePlugin("editor-multiple-lanes"); await app.plugins.enablePlugin("editor-multiple-lanes"); await T.sleep(2000); return 1`,
       );
       const w3 = await c.js(
         `return {w: [...T.tab().contentEl.querySelectorAll(".lanes-col")].map(c=>Math.round(c.getBoundingClientRect().width)), h: [...T.tab().contentEl.querySelectorAll(".lanes-col")[1].querySelectorAll(".lane")].map(c=>Math.round(c.getBoundingClientRect().height))}`,

@@ -1,6 +1,8 @@
 import { connect } from "../../editor-outliner/e2e/cdp.mjs";
 import { execSync } from "node:child_process";
-export const H = "../../../.sandbox";
+import { fileURLToPath } from "node:url";
+// absolute: ImageMagick's security policy refuses screenshot paths with ../ in them
+export const H = fileURLToPath(new URL("../../../.sandbox", import.meta.url));
 export async function open() {
   const c = await connect(9313);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -37,7 +39,7 @@ export async function open() {
     return p;
   };
   const shot = name =>
-    execSync(`mkdir -p ${H}/shots-el && bash ../../../tools/obs-sandbox.sh shot 3 ${H}/shots-el/${name}.png`);
+    execSync(`mkdir -p ${H}/shots-el && bash ${H}/../tools/obs-sandbox.sh shot 3 ${H}/shots-el/${name}.png`);
   const wheel = async (x, y, dy) =>
     c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY: dy });
   const unstick = async () => {
@@ -105,7 +107,7 @@ export async function drag(c, from, to, o = {}) {
 // The settings window (Obsidian 1.15 opens Settings in its own window): a second connection for real input there
 export async function settingsWin(c) {
   await c.ev(
-    `(async()=>{app.setting.open(); await new Promise(r=>setTimeout(r,300)); app.setting.openTabById("obsidian-editor-lanes"); await new Promise(r=>setTimeout(r,600)); return 1})()`,
+    `(async()=>{app.setting.open(); await new Promise(r=>setTimeout(r,300)); app.setting.openTabById("editor-multiple-lanes"); await new Promise(r=>setTimeout(r,600)); return 1})()`,
   );
   const { connect } = await import("../../editor-outliner/e2e/cdp.mjs");
   const s = await connect(9313, t => t.url === "about:blank" && /Settings/.test(t.title));
