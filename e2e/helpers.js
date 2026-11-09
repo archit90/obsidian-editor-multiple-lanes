@@ -101,6 +101,10 @@
       await T.P().newLanesTab();
       keep = app.workspace.getLeavesOfType("editor-lanes")[0];
     }
+    // after a reload (mobile emulation, the plugin turned off and on) the tab can still be deferred: load it and
+    // wait until it's a lanes view again
+    await keep.loadIfDeferred?.();
+    for (let i = 0; i < 50 && typeof keep.view?.layoutInfo !== "function"; i++) await T.sleep(100);
     const t = keep.view;
     if (t.layoutInfo().own) await t.setLayout(null);
     for (const l of t.lanes) for (const it of [...l.items]) l.close(it);

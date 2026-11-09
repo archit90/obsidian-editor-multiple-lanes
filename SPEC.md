@@ -48,7 +48,9 @@ editable notes ("cards").
   sidebar; a patched `iterateLeaves` exposes these leaves), so Live Preview, Source mode, Reading view,
   hotkeys, the `[[` suggest and plugins work as in a tab. Backlinks Full View panes show under each card
   unless turned off.
-- **Header:** collapse chevron; `folder/` (muted, cut from the left when long, optional) and the note name;
+- **Header:** collapse chevron; `folder/` (muted, optional) and the note name, side by side: each gets the width it needs, and when both
+  don't fit they share the space evenly (a short one leaves the rest to the other); the folder is cut from the
+  left, so its nearest folder stays in view, and the name ends in "…", so neither disappears;
   the view-mode button; the pin button (always visible, accent colour when pinned); ✕. Size comfortable or
   compact.
 - **Compact editor layout** (off by default): less white space inside each card, in Live Preview, Source mode

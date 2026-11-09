@@ -162,28 +162,31 @@
   box-shadow: 0 0 0 1px var(--background-modifier-border-focus, #999);
   text-overflow: clip;
 }
-/* "folder/" + editable name, read as one path; a long folder is cut from the left so the name stays visible */
+/* "folder/" + editable name, read as one path, in two columns that share the space: each gets what it needs, and
+   when both don't fit they split it evenly (a short one gives its rest to the other). The folder is cut from the
+   left (the nearest folder stays in view), the name ends in "…", so neither disappears. */
 .lane-item-name {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(min(2em, 100%), max-content);
   align-items: baseline;
   min-width: 0;
   flex: 0 1 auto;
 }
 .lane-item-path {
+  grid-column: 1;
   color: var(--text-muted, #888);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   direction: rtl;
   min-width: 0;
-  flex: 0 1 auto;
 }
 .lane-item-path:empty {
   display: none;
 }
 .lane-item-name .lane-item-title {
-  flex: 0 0 auto;
-  max-width: 100%;
+  grid-column: 2;
+  min-width: 0;
 }
 .lane-close {
   flex: none;

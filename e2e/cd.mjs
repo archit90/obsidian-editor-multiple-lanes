@@ -40,6 +40,27 @@ export const cases = [
     },
   },
   {
+    id: "CD-02b",
+    run: async c => {
+      const P =
+        "_test/deep/folder/EL a very long note name that does not fit into the card header at all, not even close.md";
+      await c.js(`await T.note(${JSON.stringify(P)},"long"); return 1`);
+      await openIn(c, P, 0);
+      c.shot("CD-02b");
+      const r = await c.js(
+        `const it=${item(0, 0)}; const t=it.titleEl.getBoundingClientRect(), p=it.pathEl.getBoundingClientRect(), n=it.el.querySelector(".lane-item-name").getBoundingClientRect(); const tn=[...it.pathEl.childNodes].find(x=>x.nodeType===3); const txt=tn.textContent; const at=txt.lastIndexOf("folder/"); const rg=it.el.ownerDocument.createRange(); rg.setStart(tn, at); rg.setEnd(tn, at + "folder/".length); const q=rg.getBoundingClientRect(); return {pathW:Math.round(p.width), pathScroll: it.pathEl.scrollWidth, titleW:Math.round(t.width), titleScroll: it.titleEl.scrollWidth, nameW: Math.round(n.width), overflow: Math.round(t.right - n.right), parentShown: q.left >= p.left - 1 && q.right <= p.right + 1}`,
+      );
+      return {
+        ok:
+          r.pathW >= Math.min(r.pathScroll, r.nameW * 0.4) &&
+          r.parentShown &&
+          r.titleW < r.titleScroll &&
+          r.overflow <= 1,
+        note: JSON.stringify(r),
+      };
+    },
+  },
+  {
     id: "CD-03",
     run: async c => {
       await openIn(c, A, 0);
