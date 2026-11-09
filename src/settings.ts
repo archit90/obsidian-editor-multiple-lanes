@@ -52,11 +52,24 @@ export class LanesSettingTab extends PluginSettingTab {
       );
   }
 
-  private toggle<K extends keyof Settings>(el: HTMLElement, key: K, name: string, desc: string, refresh: Refresh) {
+  /** An on/off setting; `after` runs once the change is saved (to show or hide settings that depend on it). */
+  private toggle<K extends keyof Settings>(
+    el: HTMLElement,
+    key: K,
+    name: string,
+    desc: string,
+    refresh: Refresh,
+    after?: () => void,
+  ) {
     return new Setting(el)
       .setName(name)
       .setDesc(desc)
-      .addToggle(t => t.setValue(!!this.s[key]).onChange(v => this.set(key, v as Settings[K], refresh)));
+      .addToggle(t =>
+        t.setValue(!!this.s[key]).onChange(async v => {
+          await this.set(key, v as Settings[K], refresh);
+          after?.();
+        }),
+      );
   }
 
   /** A whole-number field: out-of-range or non-numeric input is flagged and not saved. */
@@ -187,7 +200,16 @@ export class LanesSettingTab extends PluginSettingTab {
       "Compact editor layout",
       "Less white space inside each note: smaller margins around the text and the properties, and none above a heading on the first line.",
       "looks",
+      () => foldSetting.settingEl.toggle(this.s.compactEditor),
     );
+    const foldSetting = this.toggle(
+      el,
+      "foldProperties",
+      "Start with properties folded",
+      "With the compact editor layout, a note's properties are folded when its card opens it; click Properties to unfold. Normal tabs keep the note's own fold.",
+      "looks",
+    );
+    foldSetting.settingEl.toggle(this.s.compactEditor);
     let heightSetting: Setting | null = null;
     this.choice(
       el,

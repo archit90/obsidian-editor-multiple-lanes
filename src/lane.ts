@@ -1072,6 +1072,12 @@ export class Lane {
       // unmounted (and maybe mounted again) while the note opened: this leaf goes (see `opening`)
       if (it.leaf !== leaf) return;
       it.pending = null;
+      const s = this.plugin.settings;
+      if (it.propsFold === undefined && s.compactEditor && s.foldProperties) it.propsFold = "auto";
+      if (it.propsFold === "auto" && setPropertiesFold(leaf.view, true))
+        propertiesHeading(leaf.view.containerEl)?.addEventListener("pointerdown", () => (it.propsFold = "user"));
+      if (it.propsFold === "auto")
+        propertiesHeading(leaf.view.containerEl)?.addEventListener("keydown", () => (it.propsFold = "user"));
       if (cursor) restoreSelection(leaf, cursor);
       this.syncView(it, true);
       if (it.parked) {
@@ -1120,6 +1126,8 @@ export class Lane {
         it.pending = null;
       }
     }
+    // the card's own properties fold goes before Obsidian saves the note's folds as the view closes
+    if (leaf && it.propsFold === "auto") setPropertiesFold(leaf.view, false);
     this.plugin.splits.delete(split);
     if (leaf) this.plugin.hostedLeaves.delete(leaf);
     // Unhook first: an emptied split removes itself from its parent, and it was never the parent's child.
@@ -1343,4 +1351,23 @@ function restoreSelection(leaf: WorkspaceLeaf, cursor: unknown) {
   } catch {
     /* a selection that no longer fits the note: leave the default */
   }
+}
+
+/** A note view's properties box (MarkdownView's `metadataEditor`, Obsidian's own; the same box shows in Reading view). */
+function propertiesEditor(view: unknown): Record<string, unknown> | undefined {
+  return asRecord(asRecord(view)?.metadataEditor);
+}
+
+/** Folds or unfolds a note view's properties box without saving it (Obsidian's setCollapse(collapsed, save)). */
+function setPropertiesFold(view: unknown, folded: boolean): boolean {
+  const editor = propertiesEditor(view);
+  const set = editor?.setCollapse;
+  if (typeof set !== "function") return false;
+  Reflect.apply(set, editor, [folded, false]);
+  return true;
+}
+
+/** A note view's "Properties" heading (a click or a key on it folds or unfolds by hand), found in the view's DOM. */
+function propertiesHeading(viewEl: HTMLElement): HTMLElement | null {
+  return viewEl.querySelector<HTMLElement>(".metadata-properties-heading");
 }

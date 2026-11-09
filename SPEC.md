@@ -59,6 +59,12 @@ editable notes ("cards").
   the space above it. Obsidian's collapse arrow beside "Properties" moves inside the heading so the narrower
   margin doesn't cut it off. Obsidian's own variables (`--file-margins`, `--metadata-padding`) are set on the
   card, under the lanes tab's `lane-compact-editor` class; normal tabs keep Obsidian's spacing.
+- **Start with properties folded** (on by default; shown and used only with the compact editor layout): a note's
+  properties are folded when its card opens it, in Live Preview, Source mode and Reading view; clicking
+  "Properties" (or a key on it) unfolds it, and from then on that card keeps what you chose, which Obsidian saves for
+  the note as in a tab. The card's own fold is never saved: it's undone before the card unmounts (closed, or far from
+  view; it folds again when it comes back), so a normal tab of the note shows its properties as before. While a card
+  has the note open, Obsidian starts another view of the same note from the card's state.
 - **Renaming:** clicking the name edits it (desktop); Enter or clicking away renames the file (links
   update), Escape cancels, ↓ moves into the note, paste inserts plain text. Refused with a notice: `\ / : #
 ^ [ ] | * " < > ?`, a leading dot, `.md`, a name taken in the folder, and, with "Keep a date-time prefix when
@@ -169,7 +175,7 @@ editable notes ("cards").
   the default; a note on lane sizes.
 - **Keeping lanes tidy:** accordion mode off; maximum notes per lane 0 (no limit); auto-collapse after 0
   (off).
-- **Looks:** show folder in note headers on; header size comfortable; compact editor layout off; note height
+- **Looks:** show folder in note headers on; header size comfortable; compact editor layout off; start with properties folded on; note height
   grow to content (or cap at 600 px and scroll inside the card).
 - **Renaming:** keep a date-time prefix when renaming on.
 - **Performance:** show backlinks panes under lane notes on; pre-load distance 300 px (far-away cards also

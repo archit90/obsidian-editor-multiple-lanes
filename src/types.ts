@@ -77,6 +77,12 @@ export interface Item {
   shownMode?: string;
   /** Unmounted while far from view: its body keeps its height until it mounts again. */
   parked?: boolean;
+  /**
+   * "Start with properties folded": "auto" while the card holds its own fold (folded at each mount, undone before
+   * each unmount, so Obsidian never saves it for the note), "user" once the properties were folded or unfolded by
+   * hand (then Obsidian keeps that, as in a tab). Unset until the card first mounts its note.
+   */
+  propsFold?: "auto" | "user";
   /** "Couldn't open this note.", shown after a failed mount until the next one starts. */
   errorEl?: HTMLElement | null;
 }

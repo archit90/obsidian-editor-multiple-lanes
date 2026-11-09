@@ -109,6 +109,46 @@ export const cases = [
     },
   },
   {
+    id: "CD-03c",
+    run: async c => {
+      const notes = ["_test/EL fold 1.md", "_test/EL fold 2.md", "_test/EL fold 3.md"];
+      await c.js(
+        `for (const p of ${JSON.stringify(notes)}) await T.note(p, "---\\ntype: zettel\\nstatus: inbox\\n---\\nbody"); return 1`,
+      );
+      const set = (compact, fold) =>
+        c.js(
+          `T.P().settings.compactEditor=${compact}; T.P().settings.foldProperties=${fold}; await T.P().settingsChanged("looks"); return 1`,
+        );
+      const folded = p =>
+        c.js(
+          `const it=T.tab().lanes[0].items.find(i=>i.file.path===${JSON.stringify(p)}); const m=it?.el.querySelector(".metadata-container"); return m? m.classList.contains("is-collapsed") : "no properties"`,
+        );
+      // compact on, fold on (the default): a note opened in a card starts folded
+      await set(true, true);
+      await openIn(c, notes[0], 0);
+      const on = await folded(notes[0]);
+      c.shot("CD-03c");
+      // the fold isn't saved: with the card closed, the note in a normal tab (routing to lanes off for it) shows its
+      // properties (while a card has the note open, Obsidian starts another view of it from the card's state)
+      const tab = await c.js(
+        `const lane=T.tab().lanes[0]; const it=lane.items.find(i=>i.file.path===${JSON.stringify(notes[0])}); lane.close(it); await T.sleep(300); const was=T.P().settings.lanesOnly; T.P().settings.lanesOnly=false; await T.P().settingsChanged("routing"); const l=app.workspace.getLeaf("tab"); await l.openFile(T.f(${JSON.stringify(notes[0])})); await T.sleep(600); const inLanes=!!l.view.containerEl.closest(".lanes-view"); const m=l.view.containerEl.querySelector(".metadata-container"); const r=inLanes? "in lanes" : m.classList.contains("is-collapsed"); l.detach(); T.P().settings.lanesOnly=was; await T.P().settingsChanged("routing"); return r`,
+      );
+      // fold off: unfolded
+      await set(true, false);
+      await openIn(c, notes[1], 0);
+      const foldOff = await folded(notes[1]);
+      // compact off: unfolded (the fold setting only acts with the compact layout)
+      await set(false, true);
+      await openIn(c, notes[2], 0);
+      const compactOff = await folded(notes[2]);
+      await set(false, true);
+      return {
+        ok: on === true && tab === false && foldOff === false && compactOff === false,
+        note: JSON.stringify({ on, tab, foldOff, compactOff }),
+      };
+    },
+  },
+  {
     id: "CD-04",
     run: async c => {
       await c.js(

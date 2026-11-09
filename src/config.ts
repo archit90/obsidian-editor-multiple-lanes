@@ -31,6 +31,8 @@ export interface Settings {
   headerSize: HeaderSize;
   /** Less white space inside each card: smaller margins around the note and its properties. */
   compactEditor: boolean;
+  /** With compactEditor: a note's properties are folded when its card first opens it. */
+  foldProperties: boolean;
   noteHeight: NoteHeight;
   noteMaxHeight: number; // px, with noteHeight "cap"
   // Renaming
@@ -57,6 +59,7 @@ export const DEFAULTS: Settings = {
   showFolder: true,
   headerSize: "comfortable",
   compactEditor: false,
+  foldProperties: true,
   noteHeight: "grow",
   noteMaxHeight: 600,
   keepStampPrefix: true,
