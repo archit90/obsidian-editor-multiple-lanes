@@ -29,6 +29,8 @@ export interface Settings {
   // Looks
   showFolder: boolean;
   headerSize: HeaderSize;
+  /** Less white space inside each card: smaller margins around the note and its properties. */
+  compactEditor: boolean;
   noteHeight: NoteHeight;
   noteMaxHeight: number; // px, with noteHeight "cap"
   // Renaming
@@ -54,6 +56,7 @@ export const DEFAULTS: Settings = {
   autoCollapseAfter: 0,
   showFolder: true,
   headerSize: "comfortable",
+  compactEditor: false,
   noteHeight: "grow",
   noteMaxHeight: 600,
   keepStampPrefix: true,

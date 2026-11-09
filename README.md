@@ -8,7 +8,7 @@ scrollable, fully editable notes ("cards"), so you can work on many notes in one
 - **Lanes tabs** with a layout you define: `50, 50` is two columns, `40, 30x2, 30` three columns with two
   stacked lanes in the middle. A default layout in settings, or one per tab; draggable dividers.
 - **Cards** are real Obsidian editors (Live Preview, Source, Reading view) with a header to collapse, pin,
-  rename, switch mode or close. Drag cards between lanes.
+  rename, switch mode or close. Drag cards between lanes. "Compact editor layout" trims the white space inside each card.
 - **Where notes open:** optionally every note opens in a lane ("Editor lanes only", with exceptions); a link
   clicked in a lane opens in the next lane; Shift-click and menus for "Open in editor lane".
 - **Tidy lanes:** accordion mode, a maximum number of notes per lane, auto-collapse.

@@ -55,6 +55,39 @@ export const cases = [
     },
   },
   {
+    id: "CD-03b",
+    run: async c => {
+      const P = "_test/EL props.md";
+      await c.js(
+        `await T.note(${JSON.stringify(P)}, "---\\ntype: zettel\\nstatus: inbox\\n---\\n# EL props\\n\\nbody"); return 1`,
+      );
+      await openIn(c, P, 0);
+      const gaps = () =>
+        c.js(
+          `const it=${item(0, 0)}; const body=it.el.querySelector(".lane-item-body").getBoundingClientRect(); const meta=it.el.querySelector(".metadata-container").getBoundingClientRect(); const h=it.el.querySelector(".cm-line.HyperMD-header-1").getBoundingClientRect(); const arrow=it.el.querySelector(".metadata-properties-heading .collapse-indicator").getBoundingClientRect(); return {top: Math.round(meta.top-body.top), left: Math.round(meta.left-body.left), toHeading: Math.round(h.top-meta.bottom), arrowInside: arrow.left >= body.left, cls: it.el.closest(".lanes-view").classList.contains("lane-compact-editor")}`,
+        );
+      const off = await gaps();
+      await c.js(
+        `T.P().settings.compactEditor=true; await T.P().settingsChanged("looks"); await T.sleep(300); return 1`,
+      );
+      c.shot("CD-03b");
+      const on = await gaps();
+      await c.js(`T.P().settings.compactEditor=false; await T.P().settingsChanged("looks"); return 1`);
+      const back = await gaps();
+      return {
+        ok:
+          !off.cls &&
+          on.cls &&
+          on.top < off.top &&
+          on.left < off.left &&
+          on.toHeading < off.toHeading &&
+          on.arrowInside &&
+          back.top === off.top,
+        note: JSON.stringify({ off, on, back }),
+      };
+    },
+  },
+  {
     id: "CD-04",
     run: async c => {
       await c.js(

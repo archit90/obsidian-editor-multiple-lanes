@@ -616,3 +616,33 @@ body:not(.is-phone) .workspace-leaf-content[data-type="editor-lanes"] > .view-he
 .is-phone .lane-layout-preview {
   max-width: 100%;
 }
+
+/* "Compact editor layout": less white space in a card (a card is narrow, and stacks with others): Obsidian's file margins (32px around the
+   editor and the Reading view), the properties box's padding and its 2rem gap below, and the space above a
+   heading on the note's first line. Normal tabs keep Obsidian's spacing. */
+.lanes-view.lane-compact-editor .lane-item-body .workspace-leaf-content {
+  --file-margins: var(--size-4-2) var(--size-4-3);
+  --metadata-padding: var(--size-4-1) 0;
+}
+.lanes-view.lane-compact-editor .lane-item-body .metadata-container {
+  margin-block-end: var(--size-4-2);
+}
+.lanes-view.lane-compact-editor .lane-item-body .metadata-properties-heading {
+  margin-bottom: var(--size-4-1);
+}
+/* Obsidian puts the collapse arrow 22px left of "Properties", which the narrower margin would cut off: inside */
+.lanes-view.lane-compact-editor .lane-item-body .metadata-properties-heading {
+  padding-inline-start: 18px;
+}
+.lanes-view.lane-compact-editor .lane-item-body .metadata-properties-heading .collapse-indicator {
+  inset-inline-start: 0;
+}
+.lanes-view.lane-compact-editor .lane-item-body .cm-content > .cm-line.HyperMD-header:first-child,
+.lanes-view.lane-compact-editor
+  .lane-item-body
+  .markdown-preview-section
+  > div:not(.mod-header):not(.markdown-preview-pusher)
+  > :is(h1, h2, h3, h4, h5, h6):first-child {
+  padding-top: 0;
+  margin-top: 0;
+}

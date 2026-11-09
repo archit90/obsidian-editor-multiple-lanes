@@ -408,6 +408,7 @@ export class LanesView extends ItemView {
     const s = this.plugin.settings;
     const root = this.contentEl;
     root.toggleClass("lane-compact", s.headerSize === "compact");
+    root.toggleClass("lane-compact-editor", s.compactEditor);
     root.toggleClass("lane-capped", s.noteHeight === "cap");
     root.style.setProperty("--lane-note-max-height", `${s.noteMaxHeight}px`);
     // Backlinks Full View skips note views inside an element with this attribute: a cheap cross-plugin signal

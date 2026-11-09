@@ -181,6 +181,13 @@ export class LanesSettingTab extends PluginSettingTab {
       { comfortable: "Comfortable", compact: "Compact" },
       "looks",
     );
+    this.toggle(
+      el,
+      "compactEditor",
+      "Compact editor layout",
+      "Less white space inside each note: smaller margins around the text and the properties, and none above a heading on the first line.",
+      "looks",
+    );
     let heightSetting: Setting | null = null;
     this.choice(
       el,
