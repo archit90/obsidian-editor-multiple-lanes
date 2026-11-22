@@ -198,7 +198,7 @@ export class LanesSettingTab extends PluginSettingTab {
       el,
       "compactEditor",
       "Compact editor layout",
-      "Less white space inside each note: smaller margins around the text and the properties, and none above a heading on the first line.",
+      "Less white space inside each note: smaller margins above and below the text and around the properties (the sides keep Obsidian's), and none above a heading on the first line.",
       "looks",
       () => foldSetting.settingEl.toggle(this.s.compactEditor),
     );

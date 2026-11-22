@@ -54,11 +54,11 @@ editable notes ("cards").
   the view-mode button; the pin button (always visible, accent colour when pinned); ✕. Size comfortable or
   compact.
 - **Compact editor layout** (off by default): less white space inside each card, in Live Preview, Source mode
-  and Reading view. The note's margins go from Obsidian's 32 px to 8 px at the top and 12 px at the sides, the
-  properties box's padding to 4 px and its 2rem gap below to 8 px, and a heading on the note's first line loses
-  the space above it. Obsidian's collapse arrow beside "Properties" moves inside the heading so the narrower
-  margin doesn't cut it off. Obsidian's own variables (`--file-margins`, `--metadata-padding`) are set on the
-  card, under the lanes tab's `lane-compact-editor` class; normal tabs keep Obsidian's spacing.
+  and Reading view. The note's top and bottom margins go from Obsidian's 32 px to 8 px; the side margins stay
+  Obsidian's own (`--file-margins-x`: 32 px on desktop, 24 px on mobile, or a theme's). The properties box's
+  padding goes to 4 px and its 2rem gap below to 8 px, and a heading on the note's first line loses the space above
+  it. Obsidian's own variables (`--file-margins`, `--metadata-padding`) are set on the card, under the lanes tab's
+  `lane-compact-editor` class; normal tabs keep Obsidian's spacing.
 - **Start with properties folded** (on by default; shown and used only with the compact editor layout): a note's
   properties are folded when its card opens it, in Live Preview, Source mode and Reading view; clicking
   "Properties" (or a key on it) unfolds it, and from then on that card keeps what you chose, which Obsidian saves for

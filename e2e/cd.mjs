@@ -100,7 +100,7 @@ export const cases = [
           !off.cls &&
           on.cls &&
           on.top < off.top &&
-          on.left < off.left &&
+          on.left === off.left &&
           on.toHeading < off.toHeading &&
           on.arrowInside &&
           back.top === off.top,
